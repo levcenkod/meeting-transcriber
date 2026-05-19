@@ -49,7 +49,7 @@ OUTPUT_DIR="/output"
 if [ -n "${OUTPUT_SUBDIR:-}" ]; then
     OUTPUT_DIR="/output/$OUTPUT_SUBDIR"
     mkdir -p "$OUTPUT_DIR"
-    echo "[INFO] Категория:    $OUTPUT_SUBDIR  →  $OUTPUT_DIR"
+    echo "[INFO] Категория:    $OUTPUT_SUBDIR  ->  $OUTPUT_DIR"
 fi
 
 # Формируем аргументы для количества спикеров (опционально)
@@ -74,4 +74,4 @@ whisperx "$INPUT_FILE" \
     --output_dir "$OUTPUT_DIR" \
     $SPEAKER_ARGS
 
-echo "[INFO] WhisperX завершён. Результаты в /output"
+echo "[INFO] WhisperX завершён. Результаты в $OUTPUT_DIR"
