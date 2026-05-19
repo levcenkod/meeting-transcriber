@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  transcriber:
+    build: .
+    image: meeting-transcriber
+    env_file:
+      - .env
+    volumes:
+      - ./input:/input
+      - ./output:/output
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - MODEL=${MODEL:-large-v3}
+      - LANGUAGE=${LANGUAGE:-ru}
+      - MIN_SPEAKERS=${MIN_SPEAKERS:-}
+      - MAX_SPEAKERS=${MAX_SPEAKERS:-}
+      - DEVICE=${DEVICE:-cuda}
+      - COMPUTE_TYPE=${COMPUTE_TYPE:-float16}
+    # GPU support — removed automatically if no GPU available via profile
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
