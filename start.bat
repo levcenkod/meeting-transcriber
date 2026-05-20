@@ -1,13 +1,12 @@
 @echo off
 cd /d "%~dp0"
-
-echo =====================================================
-echo   Meeting Transcriber  -  http://localhost:8080
-echo =====================================================
+echo Meeting Transcriber - http://localhost:8080
 echo.
-echo Запуск контейнера (первый раз может занять несколько минут)...
-echo Для остановки закройте это окно или нажмите Ctrl+C.
-echo.
-
-REM Запускаем docker compose; ключ --build пересобирает образ если изменились файлы
-docker compose up --build
+docker image inspect meeting-transcriber >nul 2>&1
+if errorlevel 1 (
+    echo Первый запуск -- сборка образа. Займёт 10-20 минут, потом будет быстро.
+    echo.
+    docker compose up --build
+) else (
+    docker compose up
+)
