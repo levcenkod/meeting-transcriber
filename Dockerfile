@@ -34,11 +34,20 @@ RUN pip install pyannote.audio
 # Install OpenAI-compatible client (used by summarize.py)
 RUN pip install openai
 
+# Install spaCy for local PII anonymization (used by anonymize.py)
+# Models downloaded at build time; falls back to regex-only if download fails
+RUN pip install spacy
+RUN python -m spacy download ru_core_news_md || python -m spacy download ru_core_news_sm || echo "[WARN] No Russian spaCy model - anonymization will use regex only"
+RUN python -m spacy download en_core_web_sm || echo "[WARN] No English spaCy model"
+
 # Create working directories
 RUN mkdir -p /input /output /scripts
 
 # Copy postprocess script
 COPY scripts/postprocess.py /scripts/postprocess.py
+
+# Copy anonymize module
+COPY scripts/anonymize.py /scripts/anonymize.py
 
 # Copy summarize script
 COPY scripts/summarize.py /scripts/summarize.py

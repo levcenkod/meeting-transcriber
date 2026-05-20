@@ -35,6 +35,14 @@ except ImportError:
     print("[ERROR] pip install openai", file=sys.stderr)
     sys.exit(1)
 
+# Optional local anonymization (anonymize.py in same directory)
+sys.path.insert(0, str(Path(__file__).parent))
+try:
+    from anonymize import Anonymizer as _Anonymizer
+    _ANON_AVAILABLE = True
+except ImportError:
+    _ANON_AVAILABLE = False
+
 # ─── Config ───────────────────────────────────────────────────────────────────
 
 CHUNK_SIZE_CHARS    = int(os.environ.get("CHUNK_SIZE_CHARS",    "12000"))
@@ -254,7 +262,8 @@ _MAP_SYSTEM = """\
 - Указывай evidence — короткую цитату из transcript.
 - Если это просто обсуждение без чёткого решения — не записывай как decision.
 - Если это не поручение — не записывай как action_item.
-- Сохраняй имена спикеров как они есть в transcript.\
+- Сохраняй имена спикеров как они есть в transcript.
+- В тексте могут встречаться токены вида PERSON_001, COMPANY_001, LOCATION_001, EMAIL_001, PHONE_001, DOMAIN_001, URL_001, TRANSACTION_001 — это анонимизированные реальные сущности (имена людей, компаний, городов, стран и т.д.). Обращайся с ними как с обычными именами собственными: включай в контекст, решения, поручения и цитаты точно как они есть. Никогда не убирай, не сокращай и не заменяй эти токены.\
 """
 
 
@@ -264,10 +273,15 @@ def extract_chunk(
     chunk: list[SpeakerBlock],
     chunk_id: int,
     total_chunks: int,
+    anonymizer=None,
 ) -> dict:
     time_start = chunk[0].start_time
     time_end   = chunk[-1].end_time
     text       = chunk_to_text(chunk)
+
+    # ── LOCAL ANONYMIZATION before sending to online LLM ─────────────────────
+    if anonymizer is not None:
+        text = anonymizer.anonymize(text)
 
     raw = _chat(
         client, model, _MAP_SYSTEM,
@@ -287,6 +301,10 @@ def extract_chunk(
             "risks": [], "open_questions": [], "important_facts": [],
             "mentioned_topics": [], "_parse_error": True,
         }
+
+    # ── LOCAL DE-ANONYMIZATION of LLM response ────────────────────────────────
+    if anonymizer is not None:
+        result = anonymizer.deanonymize_any(result)
 
     result["chunk_id"] = chunk_id
     result.setdefault("time_range", {"start": time_start, "end": time_end})
@@ -475,6 +493,20 @@ def summarize(speakers_file: Path) -> None:
     client, model = _get_llm_client()
     print(f"[INFO] LLM: {model}")
 
+    # ── Anonymizer setup ──────────────────────────────────────────────────────
+    anonymizer = None
+    if os.environ.get("ENABLE_ANONYMIZATION", "false").lower() in ("true", "1", "yes"):
+        if _ANON_AVAILABLE:
+            map_path = output_dir / f"{stem}_anonymization_map.json"
+            language = os.environ.get("LANGUAGE", "ru")
+            anonymizer = _Anonymizer(map_path=map_path, language=language, enabled=True)
+            print("[INFO] Anonymization: ENABLED — PII will be masked before LLM call")
+        else:
+            print("[WARN] ENABLE_ANONYMIZATION=true but anonymize.py not found",
+                  file=sys.stderr)
+    else:
+        print("[INFO] Anonymization: disabled (ENABLE_ANONYMIZATION=true to enable)")
+
     # Intermediate dir
     inter_dir = output_dir / "intermediate"
     inter_dir.mkdir(exist_ok=True)
@@ -487,7 +519,14 @@ def summarize(speakers_file: Path) -> None:
               f"[{chunk[0].start_time}–{chunk[-1].end_time}]  "
               f"{len(chunk)} blocks  {total_chars} chars")
 
-        result = extract_chunk(client, model, chunk, i, len(chunks))
+        # Save anonymized text for inspection (ANONYMIZE_SAVE_DEBUG=true)
+        if anonymizer is not None and os.environ.get("ANONYMIZE_SAVE_DEBUG", "false").lower() in ("true", "1", "yes"):
+            anon_text = anonymizer.anonymize(chunk_to_text(chunk))
+            anon_path = inter_dir / f"{stem}_chunk_{i:02d}_anon.txt"
+            anon_path.write_text(anon_text, encoding="utf-8")
+
+        result = extract_chunk(client, model, chunk, i, len(chunks),
+                               anonymizer=anonymizer)
         chunk_results.append(result)
 
         inter_path = inter_dir / f"{stem}_chunk_{i:02d}.json"
