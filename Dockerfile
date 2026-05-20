@@ -34,6 +34,9 @@ RUN pip install pyannote.audio
 # Install OpenAI-compatible client (used by summarize.py)
 RUN pip install openai
 
+# Install Flask for the web UI
+RUN pip install flask
+
 # Install spaCy for local PII anonymization (used by anonymize.py)
 # Models downloaded at build time; falls back to regex-only if download fails
 RUN pip install spacy
@@ -55,6 +58,11 @@ COPY scripts/summarize.py /scripts/summarize.py
 # Copy entrypoint script
 COPY scripts/entrypoint.sh /scripts/entrypoint.sh
 RUN chmod +x /scripts/entrypoint.sh
+
+# Web UI
+RUN mkdir -p /app/templates
+COPY app.py /app/app.py
+COPY templates/index.html /app/templates/index.html
 
 WORKDIR /
 

@@ -1,23 +1,32 @@
-version: "3.9"
+# docker-compose.yml — Meeting Transcriber web UI
+#
+# Запуск:     docker compose up --build
+# Остановка:  Ctrl+C  (или docker compose down)
+# Браузер:    http://localhost:8080
 
 services:
-  transcriber:
+  meeting-transcriber:
     build: .
     image: meeting-transcriber
-    env_file:
-      - .env
+    # Override ENTRYPOINT — запускаем Flask вместо entrypoint.sh
+    entrypoint: ["python", "/app/app.py"]
+    ports:
+      - "8080:8080"
     volumes:
       - ./input:/input
       - ./output:/output
-    environment:
-      - HF_TOKEN=${HF_TOKEN}
-      - MODEL=${MODEL:-large-v3}
-      - LANGUAGE=${LANGUAGE:-ru}
-      - MIN_SPEAKERS=${MIN_SPEAKERS:-}
-      - MAX_SPEAKERS=${MAX_SPEAKERS:-}
-      - DEVICE=${DEVICE:-cuda}
-      - COMPUTE_TYPE=${COMPUTE_TYPE:-float16}
-    # GPU support — removed automatically if no GPU available via profile
+      - ./processed:/processed
+      - ./failed:/failed
+      - ./logs:/logs
+      # Кэш моделей HuggingFace — сохраняется между перезапусками
+      - hf_cache:/root/.cache/huggingface
+    env_file: .env
+    # Позволяет Flask-серверу обращаться к LLM, запущенному на хосте
+    # (нужно если LLM_BASE_URL=http://localhost:XXXX)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    # GPU (NVIDIA). Если GPU нет — блок deploy игнорируется
     deploy:
       resources:
         reservations:
@@ -25,3 +34,7 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
+volumes:
+  hf_cache:
+
