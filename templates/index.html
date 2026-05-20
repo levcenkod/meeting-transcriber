@@ -267,7 +267,7 @@
       display: flex;
       flex-direction: column;
       gap: 8px;
-      margin-bottom: 24px;
+      margin-bottom: 20px;
     }
     .file-item {
       display: flex;
@@ -277,6 +277,10 @@
       background: #F8FAFC;
       border: 1px solid #E2E8F0;
       border-radius: 8px;
+    }
+    .file-item.primary {
+      background: #F0F4FF;
+      border-color: #C7D2FE;
     }
     .file-item .fi-icon { font-size: 1.1rem; }
     .file-item .fi-name { flex: 1; font-size: 0.88rem; font-weight: 500; color: #374151; }
@@ -292,6 +296,37 @@
       transition: background 0.15s;
     }
     .file-item a:hover { background: #EEF2FF; }
+
+    /* Collapsible secondary files */
+    details.secondary-files { margin-bottom: 20px; }
+    details.secondary-files summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #64748B;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      list-style: none;
+      padding: 6px 2px;
+      user-select: none;
+    }
+    details.secondary-files summary::-webkit-details-marker { display: none; }
+    details.secondary-files summary::before {
+      content: '▶';
+      font-size: 0.65rem;
+      transition: transform 0.2s;
+      color: #94A3B8;
+    }
+    details.secondary-files[open] summary::before { transform: rotate(90deg); }
+    details.secondary-files .inner {
+      margin-top: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
 
     /* Markdown summary */
     .summary-section { margin-top: 4px; }
@@ -419,7 +454,12 @@
       <span class="banner-text" id="banner-text">Готово!</span>
     </div>
 
-    <div class="files-list" id="files-list"></div>
+    <div class="files-list" id="files-primary"></div>
+
+    <details class="secondary-files" id="secondary-wrap" style="display:none">
+      <summary id="secondary-label">Дополнительные файлы</summary>
+      <div class="inner" id="files-secondary"></div>
+    </details>
 
     <div class="summary-section" id="summary-section" style="display:none">
       <h3>Резюме совещания</h3>
@@ -456,7 +496,10 @@ const logOutput    = document.getElementById('log-output');
 const resultsCard  = document.getElementById('results-card');
 const resultBanner = document.getElementById('result-banner');
 const bannerText   = document.getElementById('banner-text');
-const filesList    = document.getElementById('files-list');
+const filesPrimary   = document.getElementById('files-primary');
+const filesSecondary = document.getElementById('files-secondary');
+const secondaryWrap  = document.getElementById('secondary-wrap');
+const secondaryLabel = document.getElementById('secondary-label');
 const summarySection = document.getElementById('summary-section');
 const summaryBody  = document.getElementById('summary-body');
 const newJobBtn    = document.getElementById('new-job-btn');
@@ -571,7 +614,25 @@ function appendLog(text, level) {
   logOutput.parentElement.scrollTop = logOutput.parentElement.scrollHeight;
 }
 
-// ── Fetch results ──────────────────────────────────────────────────────────────
+// ── File item helper ──────────────────────────────────────────────────────────
+function fileItem(f, isPrimary) {
+  const iconMap = {
+    '_summary.md': '📊',
+    '_speakers.txt': '📝',
+    '_anonymized_speakers.txt': '🔒',
+    '.json': '🗂', '.srt': '💬', '.vtt': '💬', '.tsv': '📊', '.txt': '📝',
+  };
+  let icon = '📎';
+  for (const [k, v] of Object.entries(iconMap)) {
+    if (f.name.endsWith(k)) { icon = v; break; }
+  }
+  return `<div class="file-item${isPrimary ? ' primary' : ''}">
+    <span class="fi-icon">${icon}</span>
+    <span class="fi-name">${f.name}</span>
+    <span class="fi-size">${formatBytes(f.size)}</span>
+    <a href="/download/${encodeURIComponent(f.path)}" download="${f.name}">Скачать</a>
+  </div>`;
+}
 async function fetchResult(jobId) {
   const res  = await fetch(`/result/${jobId}`);
   const data = await res.json();
@@ -591,19 +652,22 @@ async function fetchResult(jobId) {
 
   bannerText.textContent = `Готово! Файлы сохранены в output/${data.result.category}/`;
 
-  // Files list
-  filesList.innerHTML = '';
+  // Primary files
+  filesPrimary.innerHTML = '';
   const iconMap = { '.md': '📄', '.json': '🗂', '.txt': '📝', '.srt': '💬', '.vtt': '💬' };
-  for (const f of (data.result.files || [])) {
-    const ext  = f.name.substring(f.name.lastIndexOf('.')).toLowerCase();
-    const icon = iconMap[ext] || '📎';
-    filesList.innerHTML += `
-      <div class="file-item">
-        <span class="fi-icon">${icon}</span>
-        <span class="fi-name">${f.name}</span>
-        <span class="fi-size">${formatBytes(f.size)}</span>
-        <a href="/download/${encodeURIComponent(f.path)}" download="${f.name}">Скачать</a>
-      </div>`;
+  for (const f of (data.result.primary || [])) {
+    filesPrimary.innerHTML += fileItem(f, true);
+  }
+
+  // Secondary files (collapsible)
+  filesSecondary.innerHTML = '';
+  const sec = data.result.secondary || [];
+  if (sec.length) {
+    for (const f of sec) filesSecondary.innerHTML += fileItem(f, false);
+    secondaryWrap.style.display = '';
+    secondaryLabel.textContent = `Дополнительные файлы (${sec.length})`;
+  } else {
+    secondaryWrap.style.display = 'none';
   }
 
   // Summary markdown

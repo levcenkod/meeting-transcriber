@@ -117,19 +117,21 @@ def _pipeline(job_id: str, audio_path: Path, category: str, language: str, llm_e
             _log(q, "LLM_BASE_URL не задан в .env — анализ пропущен", "warn")
 
         # ── Collect result files ─────────────────────────────────────────────
-        files = []
+        _PRIMARY = {f"{stem}_summary.md", f"{stem}_speakers.txt", f"{stem}_anonymized_speakers.txt"}
+        primary, secondary = [], []
         for f in sorted(out_dir.glob(f"{stem}*")):
-            if f.is_file() and "intermediate" not in f.parts:
-                files.append({
-                    "name": f.name,
-                    "path": str(f.relative_to(OUTPUT_DIR)),
-                    "size": f.stat().st_size,
-                })
+            if not f.is_file() or "intermediate" in f.parts:
+                continue
+            entry = {"name": f.name, "path": str(f.relative_to(OUTPUT_DIR)), "size": f.stat().st_size}
+            (primary if f.name in _PRIMARY else secondary).append(entry)
 
         summary_path = out_dir / f"{stem}_summary.md"
         summary_md   = summary_path.read_text(encoding="utf-8") if summary_path.exists() else None
 
-        job["result"] = {"files": files, "summary_md": summary_md, "category": category}
+        job["result"] = {
+            "primary": primary, "secondary": secondary,
+            "summary_md": summary_md, "category": category,
+        }
         job["status"] = "done"
         _log(q, f"✅ Готово! Файлы сохранены в output/{category}/", "ok")
 

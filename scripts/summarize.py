@@ -534,8 +534,15 @@ def summarize(speakers_file: Path) -> None:
             json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-    # ── MERGE ─────────────────────────────────────────────────────────────────
-    print("[INFO] Merging...")
+    # ── COMBINED ANONYMIZED TRANSCRIPT (when anon is enabled) ─────────────────
+    if anonymizer is not None:
+        full_text = speakers_file.read_text(encoding="utf-8")
+        combined_anon = anonymizer.anonymize(full_text)
+        anon_combined_path = output_dir / f"{stem}_anonymized_speakers.txt"
+        anon_combined_path.write_text(combined_anon, encoding="utf-8")
+        print(f"[INFO] Anonymized transcript saved: {anon_combined_path.name}")
+
+    # ── MERGE ────────────────────────────────────────────────────────────────
     merged = merge_chunks(chunk_results)
 
     # ── DEDUP ─────────────────────────────────────────────────────────────────
