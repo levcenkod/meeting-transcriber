@@ -77,6 +77,8 @@ def _pipeline(job_id: str, audio_path: Path, category: str, language: str, llm_e
     out_dir = OUTPUT_DIR / category
     out_dir.mkdir(parents=True, exist_ok=True)
     job["status"] = "running"
+    job["out_dir"] = out_dir
+    job["stem"]    = stem
 
     try:
         # ── Build environment ────────────────────────────────────────────────
@@ -215,6 +217,88 @@ def result(job_id: str):
     if not job:
         return jsonify({"error": "Not found"}), 404
     return jsonify({"status": job["status"], "result": job.get("result")})
+
+
+def _parse_speakers(speakers_txt: Path) -> list:
+    """Return [{code, samples}] from a *_speakers.txt file."""
+    text    = speakers_txt.read_text(encoding="utf-8")
+    pattern = re.compile(r'\[\d+:\d+:\d+\s*-\s*\d+:\d+:\d+\]\s*(SPEAKER_\w+):')
+    speakers: dict[str, list] = {}
+    current  = None
+    for line in text.splitlines():
+        m = pattern.match(line.strip())
+        if m:
+            current = m.group(1)
+            speakers.setdefault(current, [])
+        elif current and line.strip() and len(speakers[current]) < 3:
+            speakers[current].append(line.strip())
+    return [{"code": k, "samples": v} for k, v in sorted(speakers.items())]
+
+
+def _refresh_result(job: dict) -> None:
+    """Rebuild job['result'] file lists and summary from disk."""
+    out_dir = job["out_dir"]
+    stem    = job["stem"]
+    category = job.get("result", {}).get("category", out_dir.name)
+    _PRIMARY = {f"{stem}_summary.md", f"{stem}_speakers.txt", f"{stem}_anonymized_speakers.txt"}
+    primary, secondary = [], []
+    for f in sorted(out_dir.glob(f"{stem}*")):
+        if not f.is_file() or "intermediate" in f.parts:
+            continue
+        entry = {"name": f.name, "path": str(f.relative_to(OUTPUT_DIR)), "size": f.stat().st_size}
+        (primary if f.name in _PRIMARY else secondary).append(entry)
+    summary_path = out_dir / f"{stem}_summary.md"
+    summary_md   = summary_path.read_text(encoding="utf-8") if summary_path.exists() else None
+    job["result"] = {"primary": primary, "secondary": secondary,
+                     "summary_md": summary_md, "category": category}
+
+
+@app.route("/speakers/<job_id>")
+def speakers_info(job_id: str):
+    job = _jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Not found"}), 404
+    out_dir = job.get("out_dir")
+    stem    = job.get("stem")
+    if not out_dir or not stem:
+        return jsonify({"speakers": []})
+    sp_path = out_dir / f"{stem}_speakers.txt"
+    if not sp_path.exists():
+        return jsonify({"speakers": []})
+    return jsonify({"speakers": _parse_speakers(sp_path)})
+
+
+@app.route("/rename-speakers/<job_id>", methods=["POST"])
+def rename_speakers(job_id: str):
+    job = _jobs.get(job_id)
+    if not job or job.get("out_dir") is None:
+        return jsonify({"error": "Job not found or not ready"}), 400
+    mapping = request.get_json(force=True)
+    if not isinstance(mapping, dict):
+        return jsonify({"error": "Expected JSON object"}), 400
+    # Filter out empty names
+    mapping = {k: v for k, v in mapping.items() if isinstance(v, str) and v.strip()}
+    if not mapping:
+        return jsonify({"error": "No names provided"}), 400
+    out_dir = job["out_dir"]
+    stem    = job["stem"]
+    text_exts = {".txt", ".md", ".srt", ".vtt", ".tsv", ".json"}
+    for f in out_dir.glob(f"{stem}*"):
+        if not f.is_file() or f.suffix.lower() not in text_exts:
+            continue
+        if "intermediate" in f.parts:
+            continue
+        try:
+            content = f.read_text(encoding="utf-8")
+            for code, name in mapping.items():
+                content = content.replace(code, name)
+            f.write_text(content, encoding="utf-8")
+        except Exception:
+            pass
+    _refresh_result(job)
+    r = job["result"]
+    return jsonify({"ok": True, "summary_md": r.get("summary_md"),
+                    "primary": r["primary"], "secondary": r["secondary"]})
 
 
 @app.route("/download/<path:rel_path>")
