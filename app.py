@@ -20,6 +20,7 @@ app = Flask(__name__, template_folder="/app/templates")
 
 INPUT_DIR  = Path("/input")
 OUTPUT_DIR = Path("/output")
+OBSIDIAN_DIR = OUTPUT_DIR / "_obsidian"
 
 _SUPPORTED_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".mp4", ".mkv", ".flac", ".aac", ".webm"}
 
@@ -35,6 +36,68 @@ def _get_category(filename: str) -> str:
     if "marketing" in name: return "Маркетинг"
     if "finance"   in name: return "Финансы"
     return "Общее"
+
+
+_FS_UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def _slugify_filename(name: str, max_len: int = 80) -> str:
+    """Make a string safe for use as a filename across OSes."""
+    s = _FS_UNSAFE.sub("-", name).strip().strip(".")
+    s = re.sub(r"\s+", " ", s)
+    if len(s) > max_len:
+        s = s[:max_len].rstrip()
+    return s or "meeting"
+
+
+def _create_obsidian_note(out_dir: Path, stem: str) -> Path | None:
+    """Create a nicely-named Obsidian-friendly copy of the summary.
+
+    Reads {stem}_summary.md (already includes YAML frontmatter) and
+    {stem}_meta.json (for title/date/attendees) and writes it under
+    OUTPUT_DIR/_obsidian/{Category}/{YYYY-MM-DD} — {Title}.md
+    with wiki-links wrapped around known attendees.
+    """
+    meta_path    = out_dir / f"{stem}_meta.json"
+    summary_path = out_dir / f"{stem}_summary.md"
+    if not (meta_path.exists() and summary_path.exists()):
+        return None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    title     = meta.get("title", "Совещание")
+    date      = meta.get("date", "")
+    category  = meta.get("category") or out_dir.name
+    attendees = [a for a in meta.get("attendees", []) if a and not a.startswith("SPEAKER_")]
+
+    content = summary_path.read_text(encoding="utf-8")
+
+    # Wrap attendee names in [[wiki-links]] inside the body
+    # (only those that are real names, longest first to avoid partial matches)
+    if attendees:
+        body_start = content.find("\n\n", content.find("---\n", 4) + 4) if content.startswith("---") else 0
+        head, body = content[:body_start], content[body_start:]
+        for name in sorted(attendees, key=len, reverse=True):
+            # Skip if already wiki-linked
+            pattern = re.compile(rf"(?<!\[)\b{re.escape(name)}\b(?!\]\])")
+            body = pattern.sub(f"[[{name}]]", body)
+        content = head + body
+
+    folder = OBSIDIAN_DIR / _slugify_filename(category, 40)
+    folder.mkdir(parents=True, exist_ok=True)
+    fname = f"{date} — {_slugify_filename(title)}.md" if date else f"{_slugify_filename(title)}.md"
+    dest = folder / fname
+    dest.write_text(content, encoding="utf-8")
+    return dest
+
+
+def _read_meta(meta_path: Path) -> dict | None:
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
 
 
 def _log(q: queue.Queue, text: str, level: str = "info") -> None:
@@ -134,6 +197,14 @@ def _pipeline(job_id: str, audio_path: Path, category: str, language: str, llm_e
             "primary": primary, "secondary": secondary,
             "summary_md": summary_md, "category": category,
         }
+        # ── Create Obsidian-friendly copy (if meta available) ────────────────
+        try:
+            obs = _create_obsidian_note(out_dir, stem)
+            if obs:
+                _log(q, f"📒 Obsidian-заметка: {obs.relative_to(OUTPUT_DIR)}", "ok")
+        except Exception as e:
+            _log(q, f"Не удалось создать Obsidian-заметку: {e}", "warn")
+
         job["status"] = "done"
         _log(q, f"✅ Готово! Файлы сохранены в output/{category}/", "ok")
 
@@ -310,6 +381,83 @@ def download(rel_path: str):
     if not full.exists():
         return jsonify({"error": "Not found"}), 404
     return send_file(str(full), as_attachment=True)
+
+
+# ── Archive: browse past meetings ────────────────────────────────────────────
+
+@app.route("/meetings")
+def list_meetings():
+    """Return all meetings found in OUTPUT_DIR, grouped by category."""
+    items = []
+    if OUTPUT_DIR.exists():
+        for meta_path in OUTPUT_DIR.glob("*/*_meta.json"):
+            if "_obsidian" in meta_path.parts or "intermediate" in meta_path.parts:
+                continue
+            meta = _read_meta(meta_path)
+            if not meta:
+                continue
+            category = meta.get("category") or meta_path.parent.name
+            stem     = meta.get("stem")     or meta_path.name.replace("_meta.json", "")
+            summary  = meta_path.parent / f"{stem}_summary.md"
+            if not summary.exists():
+                continue
+            items.append({
+                "title":     meta.get("title", stem),
+                "date":      meta.get("date", ""),
+                "category":  category,
+                "attendees": meta.get("attendees", []),
+                "stem":      stem,
+                "summary_path": str(summary.relative_to(OUTPUT_DIR)),
+                "mtime":     summary.stat().st_mtime,
+            })
+    # Sort newest first
+    items.sort(key=lambda x: (x["date"], x["mtime"]), reverse=True)
+    # Group by category
+    by_cat: dict[str, list] = {}
+    for it in items:
+        by_cat.setdefault(it["category"], []).append(it)
+    return jsonify({"meetings": items, "by_category": by_cat})
+
+
+@app.route("/meeting")
+def get_meeting():
+    """Return summary content + file list for a past meeting.
+
+    Query: ?category=...&stem=...
+    """
+    category = (request.args.get("category") or "").strip()
+    stem     = (request.args.get("stem") or "").strip()
+    if not category or not stem:
+        return jsonify({"error": "category and stem required"}), 400
+
+    out_dir = (OUTPUT_DIR / category).resolve()
+    if not str(out_dir).startswith(str(OUTPUT_DIR.resolve())) or not out_dir.is_dir():
+        return jsonify({"error": "Not found"}), 404
+
+    summary_path = out_dir / f"{stem}_summary.md"
+    if not summary_path.exists():
+        return jsonify({"error": "Summary not found"}), 404
+
+    _PRIMARY = {f"{stem}_summary.md", f"{stem}_speakers.txt",
+                f"{stem}_anonymized_speakers.txt"}
+    primary, secondary = [], []
+    for f in sorted(out_dir.glob(f"{stem}*")):
+        if not f.is_file() or "intermediate" in f.parts:
+            continue
+        entry = {"name": f.name,
+                 "path": str(f.relative_to(OUTPUT_DIR)),
+                 "size": f.stat().st_size}
+        (primary if f.name in _PRIMARY else secondary).append(entry)
+
+    meta = _read_meta(out_dir / f"{stem}_meta.json") or {}
+    return jsonify({
+        "summary_md": summary_path.read_text(encoding="utf-8"),
+        "primary":    primary,
+        "secondary":  secondary,
+        "meta":       meta,
+        "category":   category,
+        "stem":       stem,
+    })
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

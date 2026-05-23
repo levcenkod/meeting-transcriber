@@ -17,9 +17,12 @@ import sys
 from pathlib import Path
 
 
-def format_time(seconds: float) -> str:
-    """Конвертирует секунды в строку вида HH:MM:SS."""
-    seconds = max(0.0, float(seconds))
+def format_time(seconds) -> str:
+    """Конвертирует секунды в строку вида HH:MM:SS. None/невалидное → 00:00:00."""
+    try:
+        seconds = max(0.0, float(seconds))
+    except (TypeError, ValueError):
+        seconds = 0.0
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = int(seconds % 60)
@@ -46,10 +49,16 @@ def build_speaker_transcript(data: dict) -> str:
             lines.append(" ".join(current_words))
             lines.append("")
 
+    def _num(v, fallback=0.0):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return fallback
+
     for seg in segments:
-        start = seg.get("start", 0)
-        end = seg.get("end", 0)
-        text = seg.get("text", "").strip()
+        start = _num(seg.get("start"))
+        end = _num(seg.get("end"), start)
+        text = (seg.get("text") or "").strip()
         speaker = seg.get("speaker")  # может отсутствовать
 
         if speaker != current_speaker:

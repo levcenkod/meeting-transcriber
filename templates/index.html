@@ -391,6 +391,53 @@
     .spinner.error { border-color: var(--error-border); border-top-color: var(--error); animation: none; }
     #status-text { font-weight: 600; color: var(--text); }
 
+    /* ── Progress bar ── */
+    .progress-wrap {
+      margin: 14px 0 6px;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .progress-bar {
+      position: relative;
+      height: 10px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      position: absolute; top: 0; left: 0; bottom: 0;
+      width: 0%;
+      background: var(--accent-grad);
+      border-radius: 999px;
+      transition: width 0.6s cubic-bezier(.4,.0,.2,1);
+      box-shadow: 0 0 12px rgba(99, 102, 241, 0.5);
+    }
+    .progress-bar.done .progress-fill { background: var(--success); box-shadow: none; }
+    .progress-bar.error .progress-fill { background: var(--error); box-shadow: none; }
+    .progress-meta {
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 0.78rem; color: var(--text-faint);
+      font-family: var(--font-mono);
+      flex-wrap: wrap; gap: 8px;
+    }
+    .progress-meta .stage { color: var(--text-muted); font-family: var(--font-sans); font-weight: 600; }
+    .progress-meta .pct   { color: var(--accent); font-weight: 700; }
+    .progress-stages {
+      display: flex; gap: 6px; flex-wrap: wrap;
+      font-size: 0.72rem;
+      color: var(--text-faint);
+      font-family: var(--font-mono);
+    }
+    .stage-pill {
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      transition: all var(--transition);
+    }
+    .stage-pill.active { background: var(--accent-soft); color: var(--accent-hover); border-color: var(--border-accent); }
+    .stage-pill.done   { background: var(--success-soft, var(--bg-muted)); color: var(--success); border-color: var(--success-border, var(--border)); opacity: 0.9; }
+
     #log-wrap {
       background: var(--log-bg);
       border-radius: var(--radius-md);
@@ -651,6 +698,58 @@
       transition: all var(--transition);
     }
     #new-job-btn:hover { background: var(--accent-soft); transform: translateY(-1px); }
+
+    /* ── Header archive button ── */
+    .header-actions { display: flex; gap: 10px; align-items: center; }
+    .archive-btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 9px 16px;
+      background: var(--bg-elev);
+      color: var(--text);
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-family: inherit; font-size: 0.85rem; font-weight: 600;
+      cursor: pointer;
+      transition: all var(--transition);
+    }
+    .archive-btn:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); }
+    .archive-btn.active { background: var(--accent-soft); color: var(--accent-hover); border-color: var(--border-accent); }
+
+    /* ── Archive section ── */
+    #archive-card { display: none; }
+    .archive-empty { color: var(--text-faint); font-style: italic; padding: 24px 0; text-align: center; }
+    .archive-cat-title {
+      font-family: var(--font-display);
+      font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--text-faint);
+      margin: 18px 0 8px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--border);
+    }
+    .archive-cat-title:first-child { margin-top: 0; }
+    .meeting-item {
+      display: flex; flex-direction: column; gap: 4px;
+      padding: 12px 14px;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: all var(--transition);
+    }
+    .meeting-item:hover { border-color: var(--border-accent); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+    .meeting-item.open { border-color: var(--accent); background: var(--accent-soft); }
+    .meeting-title { font-weight: 600; color: var(--text); font-size: 0.95rem; }
+    .meeting-meta { display: flex; gap: 12px; font-size: 0.78rem; color: var(--text-faint); flex-wrap: wrap; }
+    .meeting-meta span::before { content: "· "; margin: 0 4px; opacity: 0.5; }
+    .meeting-meta span:first-child::before { content: ""; margin: 0; }
+    .meeting-detail {
+      margin-top: 12px;
+      padding: 14px 16px;
+      background: var(--bg-subtle);
+      border: 1px dashed var(--border);
+      border-radius: var(--radius-sm);
+    }
   </style>
 </head>
 <body>
@@ -663,7 +762,11 @@
       <p>Транскрипция и анализ аудиозаписей совещаний</p>
     </div>
   </div>
-  <button class="theme-toggle" id="theme-toggle" title="Сменить тему" aria-label="Сменить тему">
+  <div class="header-actions">
+    <button class="archive-btn" id="archive-btn" title="Прошлые планёрки">
+      📚 <span>Архив</span>
+    </button>
+    <button class="theme-toggle" id="theme-toggle" title="Сменить тему" aria-label="Сменить тему">
     <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
     </svg>
@@ -672,12 +775,13 @@
       <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
     </svg>
   </button>
+  </div>
 </header>
 
 <main>
 
   <!-- Upload -->
-  <div class="card">
+  <div class="card" id="upload-card">
     <div class="card-title">Файл</div>
     <div id="dropzone">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -698,7 +802,7 @@
   </div>
 
   <!-- Settings -->
-  <div class="card">
+  <div class="card" id="settings-card">
     <div class="card-title">Настройки</div>
     <div class="settings-grid">
       <div class="field">
@@ -734,6 +838,20 @@
     <div class="step-header">
       <div class="spinner" id="spinner"></div>
       <span id="status-text">Запуск...</span>
+    </div>
+    <div class="progress-wrap">
+      <div class="progress-bar" id="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+      <div class="progress-meta">
+        <span class="stage" id="progress-stage">Инициализация…</span>
+        <span><span id="progress-elapsed">00:00</span> · осталось <span id="progress-eta">—</span></span>
+        <span class="pct" id="progress-pct">0%</span>
+      </div>
+      <div class="progress-stages">
+        <span class="stage-pill" data-stage="transcribe">1. WhisperX</span>
+        <span class="stage-pill" data-stage="postprocess">2. Постобработка</span>
+        <span class="stage-pill" data-stage="llm_map">3. LLM анализ</span>
+        <span class="stage-pill" data-stage="llm_merge">4. Резюме</span>
+      </div>
     </div>
     <div id="log-wrap"><div id="log-output"></div></div>
   </div>
@@ -771,6 +889,15 @@
     </div>
 
     <button id="new-job-btn">↩ Обработать ещё один файл</button>
+  </div>
+
+  <!-- Archive -->
+  <div class="card" id="archive-card">
+    <h2>📚 Архив планёрок</h2>
+    <p style="color: var(--text-faint); font-size: 0.85rem; margin: -4px 0 14px;">
+      Все обработанные совещания. Кликни на запись, чтобы развернуть резюме и файлы.
+    </p>
+    <div id="archive-list"></div>
   </div>
 
 </main>
@@ -898,6 +1025,7 @@ startBtn.addEventListener('click', async () => {
   progressCard.style.display = 'block';
   logOutput.innerHTML = '';
   statusText.textContent = `Транскрипция «${data.filename}» [${data.category}]`;
+  resetProgress();
   startStreaming(data.job_id);
 });
 
@@ -912,6 +1040,7 @@ function startStreaming(jobId) {
     if (msg.type === 'done') {
       eventSource.close();
       fetchResult(jobId);
+      archiveLoaded = false;
       return;
     }
     if (msg.type === 'log') appendLog(msg.text, msg.level);
@@ -929,6 +1058,192 @@ function appendLog(text, level) {
   line.textContent = text;
   logOutput.appendChild(line);
   logOutput.parentElement.scrollTop = logOutput.parentElement.scrollHeight;
+  updateProgress(text, level);
+}
+
+// ── Progress bar / timer / ETA ────────────────────────────────────────────────
+const progressBar    = document.getElementById('progress-bar');
+const progressFill   = document.getElementById('progress-fill');
+const progressStage  = document.getElementById('progress-stage');
+const progressPct    = document.getElementById('progress-pct');
+const progressElapsed = document.getElementById('progress-elapsed');
+const progressEta    = document.getElementById('progress-eta');
+const stagePills     = document.querySelectorAll('.stage-pill');
+
+// Cumulative weight per completed stage (sum = 100)
+const STAGE_WEIGHTS = { transcribe: 60, postprocess: 5, llm_map: 25, llm_merge: 10 };
+const STAGE_ORDER   = ['transcribe', 'postprocess', 'llm_map', 'llm_merge'];
+const STAGE_LABELS  = {
+  transcribe:  'Транскрипция (WhisperX)',
+  postprocess: 'Постобработка',
+  llm_map:     'Анализ блоков (LLM)',
+  llm_merge:   'Финальное резюме',
+};
+
+let progressState = null;
+let timerInterval = null;
+
+function resetProgress() {
+  progressState = {
+    startedAt: Date.now(),
+    currentStage: null,
+    stageStartedAt: Date.now(),
+    chunkTotal: 0,
+    chunkDone: 0,
+    chunkStartedAt: null,
+    chunkTimes: [],   // seconds per chunk
+    finished: false,
+    error: false,
+  };
+  progressFill.style.width = '0%';
+  progressBar.classList.remove('done', 'error');
+  progressPct.textContent = '0%';
+  progressStage.textContent = 'Инициализация…';
+  progressElapsed.textContent = '00:00';
+  progressEta.textContent = '—';
+  stagePills.forEach(p => p.classList.remove('active', 'done'));
+  if (timerInterval) clearInterval(timerInterval);
+  timerInterval = setInterval(tickTimer, 1000);
+}
+
+function fmtTime(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m >= 60) {
+    const h = Math.floor(m / 60);
+    return `${h}ч ${String(m % 60).padStart(2, '0')}м`;
+  }
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function tickTimer() {
+  if (!progressState) return;
+  const elapsed = (Date.now() - progressState.startedAt) / 1000;
+  progressElapsed.textContent = fmtTime(elapsed);
+  if (progressState.finished) {
+    clearInterval(timerInterval);
+    timerInterval = null;
+  }
+}
+
+function setStage(stage) {
+  if (!progressState || progressState.currentStage === stage) return;
+  // Mark previous stages as done
+  const prevIdx = STAGE_ORDER.indexOf(progressState.currentStage);
+  const newIdx  = STAGE_ORDER.indexOf(stage);
+  if (newIdx > prevIdx) {
+    for (let i = 0; i < newIdx; i++) {
+      const p = document.querySelector(`.stage-pill[data-stage="${STAGE_ORDER[i]}"]`);
+      if (p) { p.classList.remove('active'); p.classList.add('done'); }
+    }
+  }
+  progressState.currentStage = stage;
+  progressState.stageStartedAt = Date.now();
+  stagePills.forEach(p => p.classList.toggle('active', p.dataset.stage === stage));
+  progressStage.textContent = STAGE_LABELS[stage] || stage;
+}
+
+function setPercent(pct) {
+  pct = Math.max(0, Math.min(100, pct));
+  progressFill.style.width = pct.toFixed(1) + '%';
+  progressPct.textContent = Math.round(pct) + '%';
+}
+
+function stageBasePct(stage) {
+  let acc = 0;
+  for (const s of STAGE_ORDER) {
+    if (s === stage) return acc;
+    acc += STAGE_WEIGHTS[s];
+  }
+  return acc;
+}
+
+function updateProgress(text, level) {
+  if (!progressState) return;
+  const t = text || '';
+
+  // ── Stage triggers ───────────────────────────────────────────────────────
+  if (/▶\s*WhisperX/.test(t)) {
+    setStage('transcribe'); setPercent(2);
+  } else if (/✓\s*WhisperX/.test(t)) {
+    setPercent(stageBasePct('postprocess'));
+  } else if (/▶\s*Постобработка/.test(t)) {
+    setStage('postprocess');
+  } else if (/✓\s*Постобработка/.test(t)) {
+    setPercent(stageBasePct('llm_map'));
+  } else if (/▶\s*LLM анализ/.test(t)) {
+    setStage('llm_map');
+  }
+
+  // ── MAP chunks: "[INFO] MAP chunk 3/12 ..." ──────────────────────────────
+  const m = t.match(/MAP chunk\s+(\d+)\s*\/\s*(\d+)/i);
+  if (m) {
+    const i = parseInt(m[1], 10);
+    const n = parseInt(m[2], 10);
+    if (n > 0) {
+      // Record time for previous chunk if any
+      if (progressState.chunkStartedAt && i > progressState.chunkDone) {
+        const sec = (Date.now() - progressState.chunkStartedAt) / 1000;
+        progressState.chunkTimes.push(sec);
+      }
+      progressState.chunkStartedAt = Date.now();
+      progressState.chunkTotal = n;
+      progressState.chunkDone  = i - 1;  // i is current, not yet done
+      const base = stageBasePct('llm_map');
+      const w    = STAGE_WEIGHTS.llm_map;
+      setPercent(base + w * ((i - 1) / n));
+      progressStage.textContent = `Анализ блока ${i}/${n}`;
+      // ETA
+      if (progressState.chunkTimes.length >= 1) {
+        const avg = progressState.chunkTimes.reduce((a, b) => a + b, 0) / progressState.chunkTimes.length;
+        const remaining = (n - (i - 1)) * avg;
+        progressEta.textContent = '≈ ' + fmtTime(remaining);
+      }
+    }
+  }
+
+  // ── REDUCE phase ─────────────────────────────────────────────────────────
+  if (/Generating final summary|REDUCE/.test(t)) {
+    // last chunk just finished, log its time
+    if (progressState.chunkStartedAt && progressState.chunkTotal && progressState.chunkDone < progressState.chunkTotal) {
+      const sec = (Date.now() - progressState.chunkStartedAt) / 1000;
+      progressState.chunkTimes.push(sec);
+      progressState.chunkDone = progressState.chunkTotal;
+      progressState.chunkStartedAt = null;
+    }
+    setStage('llm_merge');
+    setPercent(stageBasePct('llm_merge') + 2);
+    progressStage.textContent = 'Финальное резюме';
+    progressEta.textContent = '≈ ' + fmtTime(15);
+  }
+  if (/Generating meeting title/.test(t)) {
+    setPercent(96);
+    progressStage.textContent = 'Генерация заголовка';
+  }
+
+  // ── Errors ───────────────────────────────────────────────────────────────
+  if (level === 'error' || /✗/.test(t)) {
+    progressState.error = true;
+    progressBar.classList.add('error');
+  }
+}
+
+function finishProgress(ok) {
+  if (!progressState) return;
+  progressState.finished = true;
+  if (ok) {
+    setPercent(100);
+    progressBar.classList.add('done');
+    progressStage.textContent = 'Готово';
+    progressEta.textContent = '—';
+    // Mark all pills as done
+    stagePills.forEach(p => { p.classList.remove('active'); p.classList.add('done'); });
+  } else {
+    progressBar.classList.add('error');
+    progressStage.textContent = 'Ошибка';
+    progressEta.textContent = '—';
+  }
 }
 
 // ── File item helper ──────────────────────────────────────────────────────────
@@ -957,6 +1272,7 @@ async function fetchResult(jobId) {
   const ok = data.status === 'done';
   spinner.className = 'spinner ' + (ok ? 'done' : 'error');
   statusText.textContent = ok ? 'Завершено' : 'Завершено с ошибкой';
+  finishProgress(ok);
 
   resultsCard.style.display = 'block';
   newJobBtn.style.display    = 'inline-block';
@@ -1070,6 +1386,129 @@ applySpBtn.addEventListener('click', async () => {
     applySpBtn.disabled = false;
   }
 });
+
+// ── Archive ──────────────────────────────────────────────────────────────────
+const archiveBtn   = document.getElementById('archive-btn');
+const archiveCard  = document.getElementById('archive-card');
+const archiveList  = document.getElementById('archive-list');
+const uploadCard   = document.getElementById('upload-card');
+const settingsCard = document.getElementById('settings-card');
+const startBtnEl   = document.getElementById('start-btn');
+let archiveOpen    = false;
+let archiveLoaded  = false;
+let openMeetingKey = null;
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]
+  ));
+}
+
+function renderArchive(data) {
+  const cats = data.by_category || {};
+  const names = Object.keys(cats).sort((a, b) => a.localeCompare(b, 'ru'));
+  if (!names.length) {
+    archiveList.innerHTML = '<div class="archive-empty">Пока нет обработанных планёрок.</div>';
+    return;
+  }
+  let html = '';
+  for (const cat of names) {
+    html += `<div class="archive-cat-title">${escapeHtml(cat)} · ${cats[cat].length}</div>`;
+    for (const m of cats[cat]) {
+      const key = `${m.category}::${m.stem}`;
+      const att = (m.attendees || []).filter(a => !a.startsWith('SPEAKER_'));
+      const attStr = att.length ? att.slice(0, 4).join(', ') + (att.length > 4 ? ` +${att.length - 4}` : '') : '';
+      html += `
+        <div class="meeting-item" data-key="${escapeHtml(key)}" data-category="${escapeHtml(m.category)}" data-stem="${escapeHtml(m.stem)}">
+          <div class="meeting-title">${escapeHtml(m.title)}</div>
+          <div class="meeting-meta">
+            ${m.date ? `<span>📅 ${escapeHtml(m.date)}</span>` : ''}
+            ${attStr ? `<span>👥 ${escapeHtml(attStr)}</span>` : ''}
+            <span>📁 ${escapeHtml(m.stem)}</span>
+          </div>
+          <div class="meeting-detail" data-detail-for="${escapeHtml(key)}" style="display:none"></div>
+        </div>`;
+    }
+  }
+  archiveList.innerHTML = html;
+
+  archiveList.querySelectorAll('.meeting-item').forEach(el => {
+    el.addEventListener('click', async (ev) => {
+      // Ignore clicks inside the detail panel (links, buttons)
+      if (ev.target.closest('.meeting-detail')) return;
+      const key = el.dataset.key;
+      const detail = el.querySelector('.meeting-detail');
+      if (openMeetingKey === key) {
+        detail.style.display = 'none';
+        el.classList.remove('open');
+        openMeetingKey = null;
+        return;
+      }
+      // Close previously open
+      archiveList.querySelectorAll('.meeting-item.open').forEach(p => {
+        p.classList.remove('open');
+        const d = p.querySelector('.meeting-detail');
+        if (d) d.style.display = 'none';
+      });
+      el.classList.add('open');
+      openMeetingKey = key;
+      detail.innerHTML = '<div style="color:var(--text-faint);font-size:0.85rem;">Загружаю…</div>';
+      detail.style.display = 'block';
+      try {
+        const url = `/meeting?category=${encodeURIComponent(el.dataset.category)}&stem=${encodeURIComponent(el.dataset.stem)}`;
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const md = await resp.json();
+        let html = '';
+        // Files
+        if (md.primary?.length) {
+          html += '<div style="margin-bottom:10px;">';
+          for (const f of md.primary) html += fileItem(f, true);
+          html += '</div>';
+        }
+        if (md.secondary?.length) {
+          html += '<details style="margin-bottom:10px;"><summary style="cursor:pointer;color:var(--text-faint);font-size:0.85rem;">Доп. файлы (' + md.secondary.length + ')</summary><div style="margin-top:8px;">';
+          for (const f of md.secondary) html += fileItem(f, false);
+          html += '</div></details>';
+        }
+        // Summary
+        if (md.summary_md) {
+          html += '<div class="md-body">' + marked.parse(md.summary_md) + '</div>';
+        }
+        detail.innerHTML = html || '<div style="color:var(--text-faint);">Нет данных.</div>';
+      } catch (e) {
+        detail.innerHTML = `<div style="color:var(--error);">Ошибка: ${escapeHtml(e.message)}</div>`;
+      }
+    });
+  });
+}
+
+async function loadArchive(force = false) {
+  if (archiveLoaded && !force) return;
+  archiveList.innerHTML = '<div class="archive-empty">Загружаю…</div>';
+  try {
+    const resp = await fetch('/meetings');
+    const data = await resp.json();
+    renderArchive(data);
+    archiveLoaded = true;
+  } catch (e) {
+    archiveList.innerHTML = `<div style="color:var(--error);">Ошибка загрузки: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function setArchiveOpen(open) {
+  archiveOpen = open;
+  archiveCard.style.display   = open ? 'block' : 'none';
+  uploadCard.style.display    = open ? 'none'  : 'block';
+  settingsCard.style.display  = open ? 'none'  : 'block';
+  startBtnEl.style.display    = open ? 'none'  : '';
+  archiveBtn.classList.toggle('active', open);
+  if (open && progressCard.style.display === 'block') progressCard.style.display = 'none';
+  if (open && resultsCard.style.display  === 'block') resultsCard.style.display  = 'none';
+  if (open) loadArchive();
+}
+
+archiveBtn.addEventListener('click', () => setArchiveOpen(!archiveOpen));
 
 // ── New job ───────────────────────────────────────────────────────────────────
 newJobBtn.addEventListener('click', () => {

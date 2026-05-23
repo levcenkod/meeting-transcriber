@@ -454,6 +454,43 @@ def generate_final_summary(client: "OpenAI", model: str, merged: dict) -> str:
     )
 
 
+_TITLE_SYSTEM = (
+    "Ты помогаешь именовать рабочие совещания. "
+    "По данным встречи придумай короткий заголовок (4–8 слов) на русском, "
+    "отражающий главную тему. Без кавычек, без точки в конце, "
+    "без префиксов вроде 'Совещание:' или 'Планёрка:'. "
+    "Верни ТОЛЬКО заголовок одной строкой."
+)
+
+
+def generate_meeting_title(client: "OpenAI", model: str, merged: dict, summary_md: str) -> str:
+    topics    = merged.get("mentioned_topics", [])[:8]
+    decisions = [d.get("text", "") if isinstance(d, dict) else str(d)
+                 for d in merged.get("decisions", [])[:5]]
+    actions   = [a.get("text", "") if isinstance(a, dict) else str(a)
+                 for a in merged.get("action_items", [])[:5]]
+    payload = {
+        "topics":    topics,
+        "decisions": decisions,
+        "actions":   actions,
+        "summary_preview": summary_md[:1500],
+    }
+    try:
+        raw = _chat(
+            client, model, _TITLE_SYSTEM,
+            f"Данные встречи:\n\n{json.dumps(payload, ensure_ascii=False, indent=2)}",
+        )
+        title = re.sub(r"<think>[\s\S]*?</think>", "", raw).strip()
+        title = title.splitlines()[0].strip().strip('"').strip("'").rstrip(".")
+        # Sanity-clip
+        if len(title) > 120:
+            title = title[:120].rstrip() + "…"
+        return title or "Совещание"
+    except Exception as e:
+        print(f"[WARN] Title generation failed: {e}", file=sys.stderr)
+        return "Совещание"
+
+
 # ─── Main pipeline ────────────────────────────────────────────────────────────
 
 def summarize(speakers_file: Path) -> None:
@@ -590,9 +627,55 @@ def summarize(speakers_file: Path) -> None:
     # Strip potential thinking blocks from summary too
     summary_md = re.sub(r"<think>[\s\S]*?</think>", "", summary_md).strip()
 
+    # ── TITLE: ask LLM for a short meeting title ──────────────────────────────
+    print("[INFO] Generating meeting title...")
+    title = generate_meeting_title(client, model, merged, summary_md)
+    print(f"[OK]   Title: {title}")
+
+    # ── Collect attendees (unique speakers) ───────────────────────────────────
+    attendees = sorted({b.speaker for b in blocks if b.speaker})
+
+    # ── Build Obsidian-friendly frontmatter ───────────────────────────────────
+    from datetime import date as _date
+    meeting_date = _date.today().isoformat()
+    category     = output_dir.name
+
+    def _yaml_list(items: list[str]) -> str:
+        if not items:
+            return "[]"
+        return "[" + ", ".join(json.dumps(s, ensure_ascii=False) for s in items) + "]"
+
+    frontmatter = (
+        "---\n"
+        f"title: {json.dumps(title, ensure_ascii=False)}\n"
+        f"date: {meeting_date}\n"
+        f"category: {json.dumps(category, ensure_ascii=False)}\n"
+        f"attendees: {_yaml_list(attendees)}\n"
+        f"tags: [meeting, {category.lower()}]\n"
+        f"source: \"[[{stem}_speakers]]\"\n"
+        "---\n\n"
+        f"# {title}\n\n"
+    )
+
+    summary_md_full = frontmatter + summary_md
+
     summary_path = output_dir / f"{stem}_summary.md"
-    summary_path.write_text(summary_md, encoding="utf-8")
+    summary_path.write_text(summary_md_full, encoding="utf-8")
     print(f"[OK]   {summary_path.name}")
+
+    # ── Save meta.json for the web UI / archive ───────────────────────────────
+    meta = {
+        "title":     title,
+        "date":      meeting_date,
+        "category":  category,
+        "attendees": attendees,
+        "stem":      stem,
+    }
+    meta_path = output_dir / f"{stem}_meta.json"
+    meta_path.write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(f"[OK]   {meta_path.name}")
 
     print(f"[OK] Pipeline complete → {output_dir}")
 
