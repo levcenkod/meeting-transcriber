@@ -60,9 +60,10 @@ COPY scripts/entrypoint.sh /scripts/entrypoint.sh
 RUN chmod +x /scripts/entrypoint.sh
 
 # Web UI
-RUN mkdir -p /app/templates
+RUN mkdir -p /app/templates /app/static
 COPY app.py /app/app.py
 COPY templates/index.html /app/templates/index.html
+COPY static/ /app/static/
 
 WORKDIR /
 
