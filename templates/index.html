@@ -1026,8 +1026,40 @@ startBtn.addEventListener('click', async () => {
   logOutput.innerHTML = '';
   statusText.textContent = `Транскрипция «${data.filename}» [${data.category}]`;
   resetProgress();
+  try { localStorage.setItem('activeJobId', data.job_id); } catch {}
   startStreaming(data.job_id);
 });
+
+// ── Attach to an existing job (reconnect / open from archive) ────────────────
+async function attachToJob(jobId) {
+  // Fetch current status first
+  let info;
+  try {
+    const r = await fetch(`/result/${jobId}`);
+    if (!r.ok) throw new Error('not found');
+    info = await r.json();
+  } catch {
+    try { localStorage.removeItem('activeJobId'); } catch {}
+    return false;
+  }
+  if (eventSource) { try { eventSource.close(); } catch {} eventSource = null; }
+  currentJobId = jobId;
+  try { localStorage.setItem('activeJobId', jobId); } catch {}
+  // Close archive if open
+  if (typeof archiveOpen !== 'undefined' && archiveOpen) setArchiveOpen(false);
+  // Reset & show progress
+  logOutput.innerHTML = '';
+  progressCard.style.display = 'block';
+  resultsCard.style.display  = 'none';
+  newJobBtn.style.display    = 'none';
+  startBtn.disabled = true;
+  startBtn.textContent = 'Обработка...';
+  spinner.className  = 'spinner';
+  statusText.textContent = `Транскрипция «${info.filename || jobId}» [${info.category || '—'}]`;
+  resetProgress();
+  startStreaming(jobId);
+  return true;
+}
 
 // ── SSE log stream ────────────────────────────────────────────────────────────
 function startStreaming(jobId) {
@@ -1404,14 +1436,36 @@ function escapeHtml(s) {
   ));
 }
 
-function renderArchive(data) {
+function renderArchive(data, jobs = []) {
   const cats = data.by_category || {};
   const names = Object.keys(cats).sort((a, b) => a.localeCompare(b, 'ru'));
-  if (!names.length) {
+
+  // ── Build "В процессе" section ────────────────────────────────────────────
+  const running = jobs.filter(j => j.status === 'running' || j.status === 'pending');
+  let html = '';
+  if (running.length) {
+    html += `<div class="archive-cat-title" style="color:var(--accent);">⏳ В процессе · ${running.length}</div>`;
+    for (const j of running) {
+      const elapsed = j.started_at ? Math.round(Date.now()/1000 - j.started_at) : 0;
+      const mm = String(Math.floor(elapsed/60)).padStart(2,'0');
+      const ss = String(elapsed%60).padStart(2,'0');
+      html += `
+        <div class="meeting-item running-item" data-job-id="${escapeHtml(j.job_id)}" style="border-color: var(--border-accent); background: var(--accent-soft);">
+          <div class="meeting-title">▶ ${escapeHtml(j.filename || j.job_id)}</div>
+          <div class="meeting-meta">
+            <span>📁 ${escapeHtml(j.category || '—')}</span>
+            <span>⏱ ${mm}:${ss}</span>
+            <span style="color: var(--accent); font-weight: 600;">${j.status === 'running' ? 'идёт обработка' : 'в очереди'} · клик чтобы открыть</span>
+          </div>
+        </div>`;
+    }
+  }
+
+  // ── Past meetings ─────────────────────────────────────────────────────────
+  if (!names.length && !running.length) {
     archiveList.innerHTML = '<div class="archive-empty">Пока нет обработанных планёрок.</div>';
     return;
   }
-  let html = '';
   for (const cat of names) {
     html += `<div class="archive-cat-title">${escapeHtml(cat)} · ${cats[cat].length}</div>`;
     for (const m of cats[cat]) {
@@ -1432,7 +1486,12 @@ function renderArchive(data) {
   }
   archiveList.innerHTML = html;
 
-  archiveList.querySelectorAll('.meeting-item').forEach(el => {
+  // Running items → attach
+  archiveList.querySelectorAll('.running-item').forEach(el => {
+    el.addEventListener('click', () => attachToJob(el.dataset.jobId));
+  });
+
+  archiveList.querySelectorAll('.meeting-item:not(.running-item)').forEach(el => {
     el.addEventListener('click', async (ev) => {
       // Ignore clicks inside the detail panel (links, buttons)
       if (ev.target.closest('.meeting-detail')) return;
@@ -1487,9 +1546,13 @@ async function loadArchive(force = false) {
   if (archiveLoaded && !force) return;
   archiveList.innerHTML = '<div class="archive-empty">Загружаю…</div>';
   try {
-    const resp = await fetch('/meetings');
-    const data = await resp.json();
-    renderArchive(data);
+    const [meetingsResp, jobsResp] = await Promise.all([
+      fetch('/meetings'),
+      fetch('/jobs'),
+    ]);
+    const data = await meetingsResp.json();
+    const jobsData = jobsResp.ok ? await jobsResp.json() : { jobs: [] };
+    renderArchive(data, jobsData.jobs || []);
     archiveLoaded = true;
   } catch (e) {
     archiveList.innerHTML = `<div style="color:var(--error);">Ошибка загрузки: ${escapeHtml(e.message)}</div>`;
@@ -1510,8 +1573,33 @@ function setArchiveOpen(open) {
 
 archiveBtn.addEventListener('click', () => setArchiveOpen(!archiveOpen));
 
+// ── Auto-reconnect to active job on page load ────────────────────────────────
+(async () => {
+  let storedId = null;
+  try { storedId = localStorage.getItem('activeJobId'); } catch {}
+  if (!storedId) {
+    // No saved job in this browser — but server may still have one running
+    // (e.g. user opened the page in a fresh tab). Pick the newest running.
+    try {
+      const r = await fetch('/jobs');
+      if (r.ok) {
+        const d = await r.json();
+        const running = (d.jobs || []).find(j => j.status === 'running' || j.status === 'pending');
+        if (running) storedId = running.job_id;
+      }
+    } catch {}
+  }
+  if (storedId) {
+    const ok = await attachToJob(storedId);
+    if (!ok) {
+      try { localStorage.removeItem('activeJobId'); } catch {}
+    }
+  }
+})();
+
 // ── New job ───────────────────────────────────────────────────────────────────
 newJobBtn.addEventListener('click', () => {
+  try { localStorage.removeItem('activeJobId'); } catch {}
   clearFile();
   logOutput.innerHTML = '';
   progressCard.style.display  = 'block';

@@ -11,6 +11,7 @@ import queue
 import re
 import subprocess
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -100,14 +101,30 @@ def _read_meta(meta_path: Path) -> dict | None:
         return None
 
 
-def _log(q: queue.Queue, text: str, level: str = "info") -> None:
-    q.put({"type": "log", "level": level, "text": text})
+def _log(q_or_job, text: str, level: str = "info") -> None:
+    """Append a log entry to the job's buffer and fan it out to all subscribers."""
+    msg = {"type": "log", "level": level, "text": text}
+    # Support both legacy (queue) and new (job dict) call styles
+    if isinstance(q_or_job, dict):
+        job = q_or_job
+        job.setdefault("log_buffer", []).append(msg)
+        # Cap buffer at 2000 entries
+        if len(job["log_buffer"]) > 2000:
+            del job["log_buffer"][:len(job["log_buffer"]) - 2000]
+        for sub in list(job.get("subscribers", [])):
+            try:
+                sub.put_nowait(msg)
+            except Exception:
+                pass
+    else:
+        # Legacy queue-only call — kept for compatibility
+        q_or_job.put(msg)
     print(f"[{level.upper()}] {text}", flush=True)
 
 
-def _run_step(q: queue.Queue, cmd: list, env: dict, label: str) -> bool:
-    """Run a subprocess, stream every output line to the SSE queue. Returns True on success."""
-    _log(q, f"▶ {label}", "step")
+def _run_step(job: dict, cmd: list, env: dict, label: str) -> bool:
+    """Run a subprocess, stream every output line. Returns True on success."""
+    _log(job, f"▶ {label}", "step")
     try:
         proc = subprocess.Popen(
             cmd,
@@ -120,22 +137,21 @@ def _run_step(q: queue.Queue, cmd: list, env: dict, label: str) -> bool:
         for line in proc.stdout:
             line = line.rstrip()
             if line:
-                _log(q, line)
+                _log(job, line)
         proc.wait()
         if proc.returncode != 0:
-            _log(q, f"✗ {label} завершился с ошибкой (exit {proc.returncode})", "error")
+            _log(job, f"✗ {label} завершился с ошибкой (exit {proc.returncode})", "error")
             return False
-        _log(q, f"✓ {label}", "ok")
+        _log(job, f"✓ {label}", "ok")
         return True
     except Exception as exc:
-        _log(q, f"✗ {label}: {exc}", "error")
+        _log(job, f"✗ {label}: {exc}", "error")
         return False
 
 
 def _pipeline(job_id: str, audio_path: Path, category: str, language: str, llm_enabled: bool) -> None:
     """Main pipeline — runs in a background daemon thread."""
     job = _jobs[job_id]
-    q: queue.Queue = job["log_queue"]
     stem    = audio_path.stem
     out_dir = OUTPUT_DIR / category
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -156,30 +172,30 @@ def _pipeline(job_id: str, audio_path: Path, category: str, language: str, llm_e
             env["LLM_BASE_URL"] = re.sub(r"localhost|127\.0\.0\.1", "host.docker.internal", llm_url)
 
         # ── Step 1: WhisperX transcription ───────────────────────────────────
-        ok = _run_step(q, ["bash", "/scripts/entrypoint.sh", str(audio_path)], env,
+        ok = _run_step(job, ["bash", "/scripts/entrypoint.sh", str(audio_path)], env,
                        "WhisperX транскрипция")
         if not ok:
             job["status"] = "error"
             return
 
         # ── Step 2: Postprocess → _speakers.txt ─────────────────────────────
-        ok = _run_step(q, [
+        ok = _run_step(job, [
             "python", "/scripts/postprocess.py",
             "--output-dir", str(out_dir),
             "--filename",   stem,
         ], env, "Постобработка")
         if not ok:
-            _log(q, "Постобработка завершилась с предупреждением, продолжаем...", "warn")
+            _log(job, "Постобработка завершилась с предупреждением, продолжаем...", "warn")
 
         # ── Step 3: LLM summary (optional) ──────────────────────────────────
         speakers_file = out_dir / f"{stem}_speakers.txt"
         if llm_enabled and env.get("LLM_BASE_URL") and speakers_file.exists():
-            _run_step(q, [
+            _run_step(job, [
                 "python", "/scripts/summarize.py",
                 "--speakers-file", str(speakers_file),
             ], env, "LLM анализ")
         elif llm_enabled and not env.get("LLM_BASE_URL"):
-            _log(q, "LLM_BASE_URL не задан в .env — анализ пропущен", "warn")
+            _log(job, "LLM_BASE_URL не задан в .env — анализ пропущен", "warn")
 
         # ── Collect result files ─────────────────────────────────────────────
         _PRIMARY = {f"{stem}_summary.md", f"{stem}_speakers.txt", f"{stem}_anonymized_speakers.txt"}
@@ -201,18 +217,24 @@ def _pipeline(job_id: str, audio_path: Path, category: str, language: str, llm_e
         try:
             obs = _create_obsidian_note(out_dir, stem)
             if obs:
-                _log(q, f"📒 Obsidian-заметка: {obs.relative_to(OUTPUT_DIR)}", "ok")
+                _log(job, f"📒 Obsidian-заметка: {obs.relative_to(OUTPUT_DIR)}", "ok")
         except Exception as e:
-            _log(q, f"Не удалось создать Obsidian-заметку: {e}", "warn")
+            _log(job, f"Не удалось создать Obsidian-заметку: {e}", "warn")
 
         job["status"] = "done"
-        _log(q, f"✅ Готово! Файлы сохранены в output/{category}/", "ok")
+        _log(job, f"✅ Готово! Файлы сохранены в output/{category}/", "ok")
 
     except Exception as exc:
-        _log(q, f"Неожиданная ошибка: {exc}", "error")
+        _log(job, f"Неожиданная ошибка: {exc}", "error")
         job["status"] = "error"
     finally:
-        q.put(None)  # Signal end-of-stream to SSE generator
+        # Notify all subscribers that the stream is done
+        for sub in list(job.get("subscribers", [])):
+            try:
+                sub.put_nowait(None)
+            except Exception:
+                pass
+        job["finished_at"] = time.time()
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -245,7 +267,16 @@ def upload():
     llm_enabled = request.form.get("llm_enabled", "true") == "true"
 
     job_id = str(uuid.uuid4())[:8]
-    _jobs[job_id] = {"status": "pending", "log_queue": queue.Queue(), "result": None}
+    _jobs[job_id] = {
+        "status":      "pending",
+        "result":      None,
+        "filename":    filename,
+        "category":    category,
+        "started_at":  time.time(),
+        "finished_at": None,
+        "log_buffer":  [],     # list of message dicts (replayed on (re)connect)
+        "subscribers": [],     # list of queue.Queue, one per active SSE client
+    }
 
     threading.Thread(
         target=_pipeline,
@@ -263,17 +294,35 @@ def stream(job_id: str):
         return jsonify({"error": "Job not found"}), 404
 
     def generate():
-        q = job["log_queue"]
-        while True:
-            try:
-                msg = q.get(timeout=30)
-                if msg is None:
-                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                    break
+        # Subscribe with a fresh queue
+        sub = queue.Queue()
+        job.setdefault("subscribers", []).append(sub)
+
+        try:
+            # Replay buffered messages so a (re)connecting client gets full history
+            for msg in list(job.get("log_buffer", [])):
                 yield f"data: {json.dumps(msg)}\n\n"
-            except queue.Empty:
-                # keepalive ping so the browser doesn't close the connection
-                yield f"data: {json.dumps({'type': 'ping'})}\n\n"
+
+            # If job already finished before/while replaying, send done and exit
+            if job["status"] in ("done", "error"):
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                return
+
+            # Live tail
+            while True:
+                try:
+                    msg = sub.get(timeout=30)
+                    if msg is None:
+                        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                        break
+                    yield f"data: {json.dumps(msg)}\n\n"
+                except queue.Empty:
+                    yield f"data: {json.dumps({'type': 'ping'})}\n\n"
+        finally:
+            try:
+                job["subscribers"].remove(sub)
+            except (ValueError, KeyError):
+                pass
 
     return Response(
         generate(),
@@ -282,12 +331,36 @@ def stream(job_id: str):
     )
 
 
+@app.route("/jobs")
+def list_jobs():
+    """Return all jobs known to this server (running + recently finished, in-memory)."""
+    items = []
+    for jid, j in _jobs.items():
+        items.append({
+            "job_id":      jid,
+            "status":      j.get("status"),
+            "filename":    j.get("filename"),
+            "category":    j.get("category"),
+            "started_at":  j.get("started_at"),
+            "finished_at": j.get("finished_at"),
+            "stem":        j.get("stem"),
+        })
+    # newest first
+    items.sort(key=lambda x: x.get("started_at") or 0, reverse=True)
+    return jsonify({"jobs": items})
+
+
 @app.route("/result/<job_id>")
 def result(job_id: str):
     job = _jobs.get(job_id)
     if not job:
         return jsonify({"error": "Not found"}), 404
-    return jsonify({"status": job["status"], "result": job.get("result")})
+    return jsonify({
+        "status":   job["status"],
+        "result":   job.get("result"),
+        "filename": job.get("filename"),
+        "category": job.get("category"),
+    })
 
 
 def _parse_speakers(speakers_txt: Path) -> list:
