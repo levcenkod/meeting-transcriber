@@ -369,6 +369,21 @@
     #start-btn:not(:disabled):hover { transform: translateY(-2px); box-shadow: 0 24px 60px -20px rgba(99,102,241,0.5); }
     #start-btn:not(:disabled):active { transform: translateY(0); }
 
+    .mini-btn {
+      padding: 0 12px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      background: var(--bg-muted);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background var(--transition), border-color var(--transition), color var(--transition);
+    }
+    .mini-btn:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent-hover); border-color: var(--border-accent); }
+    .mini-btn:disabled { opacity: 0.5; cursor: not-allowed; color: var(--text-muted); }
+
     /* ── Progress ── */
     #progress-card { display: none; }
 
@@ -805,9 +820,23 @@
   <div class="card" id="settings-card">
     <div class="card-title">Настройки</div>
     <div class="settings-grid">
-      <div class="field">
-        <label for="cat-input">Категория</label>
-        <input type="text" id="cat-input" placeholder="Автоопределение по имени файла">
+      <div class="field" style="grid-column: 1 / -1;">
+        <label for="cat-select">Категория</label>
+        <div style="display:flex; gap:8px;">
+          <select id="cat-select" style="flex:1;">
+            <option value="">— выберите —</option>
+          </select>
+          <button type="button" id="cat-add-btn" class="mini-btn" title="Создать новую категорию">+ Новая</button>
+        </div>
+      </div>
+      <div class="field" style="grid-column: 1 / -1;">
+        <label for="subcat-select">Подкатегория</label>
+        <div style="display:flex; gap:8px;">
+          <select id="subcat-select" style="flex:1;" disabled>
+            <option value="">— сначала выберите категорию —</option>
+          </select>
+          <button type="button" id="subcat-add-btn" class="mini-btn" disabled title="Создать новую подкатегорию">+ Новая</button>
+        </div>
       </div>
       <div class="field">
         <label for="lang-select">Язык аудио</label>
@@ -932,7 +961,10 @@ const fileBadge    = document.getElementById('file-badge');
 const badgeName    = document.getElementById('badge-name');
 const badgeSize    = document.getElementById('badge-size');
 const badgeRemove  = document.getElementById('badge-remove');
-const catInput     = document.getElementById('cat-input');
+const catSelect    = document.getElementById('cat-select');
+const subcatSelect = document.getElementById('subcat-select');
+const catAddBtn    = document.getElementById('cat-add-btn');
+const subcatAddBtn = document.getElementById('subcat-add-btn');
 const langSelect   = document.getElementById('lang-select');
 const llmToggle    = document.getElementById('llm-toggle');
 const currentModelBadge = document.getElementById('current-model-badge');
@@ -964,29 +996,112 @@ function formatBytes(b) {
   return (b/1024/1024).toFixed(1) + ' MB';
 }
 
-function guessCategory(name) {
-  const n = name.toLowerCase();
-  if (n.includes('logistics')) return 'Логистика';
-  if (n.includes('marketing')) return 'Маркетинг';
-  if (n.includes('finance'))   return 'Финансы';
-  return 'Общее';
+function guessCategory(name) { return ''; }
+
+// ── Categories tree (loaded from /api/categories) ────────────────────────────
+let categoriesTree = {};
+
+function updateStartBtnState() {
+  startBtn.disabled = !(selectedFile && catSelect.value && subcatSelect.value);
 }
+
+function renderCategoryOptions(keepCat, keepSub) {
+  const prevCat = keepCat ?? catSelect.value;
+  const prevSub = keepSub ?? subcatSelect.value;
+  catSelect.innerHTML = '<option value="">— выберите —</option>';
+  Object.keys(categoriesTree).sort((a,b)=>a.localeCompare(b,'ru')).forEach(name => {
+    const opt = document.createElement('option');
+    opt.value = name; opt.textContent = name;
+    catSelect.appendChild(opt);
+  });
+  if (prevCat && categoriesTree[prevCat]) catSelect.value = prevCat;
+  renderSubcategoryOptions(prevSub);
+}
+
+function renderSubcategoryOptions(keepSub) {
+  const cat = catSelect.value;
+  subcatSelect.innerHTML = '';
+  if (!cat) {
+    subcatSelect.innerHTML = '<option value="">— сначала выберите категорию —</option>';
+    subcatSelect.disabled = true;
+    subcatAddBtn.disabled = true;
+    updateStartBtnState();
+    return;
+  }
+  subcatSelect.disabled = false;
+  subcatAddBtn.disabled = false;
+  const subs = categoriesTree[cat] || [];
+  if (subs.length === 0) {
+    subcatSelect.innerHTML = '<option value="">— нет подкатегорий, создайте новую —</option>';
+  } else {
+    subcatSelect.innerHTML = '<option value="">— выберите —</option>';
+    subs.slice().sort((a,b)=>a.localeCompare(b,'ru')).forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name; opt.textContent = name;
+      subcatSelect.appendChild(opt);
+    });
+    if (keepSub && subs.includes(keepSub)) subcatSelect.value = keepSub;
+  }
+  updateStartBtnState();
+}
+
+async function loadCategories(preferCat, preferSub) {
+  try {
+    const r = await fetch('/api/categories');
+    const j = await r.json();
+    categoriesTree = j.categories || {};
+  } catch { categoriesTree = {}; }
+  renderCategoryOptions(preferCat, preferSub);
+}
+
+catSelect.addEventListener('change', () => renderSubcategoryOptions());
+subcatSelect.addEventListener('change', updateStartBtnState);
+
+catAddBtn.addEventListener('click', async () => {
+  const name = (prompt('Новая категория:') || '').trim();
+  if (!name) return;
+  const r = await fetch('/api/categories', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name })
+  });
+  const j = await r.json();
+  if (!r.ok) { alert(j.error || 'Ошибка'); return; }
+  categoriesTree = j.categories || {};
+  renderCategoryOptions(name, '');
+});
+
+subcatAddBtn.addEventListener('click', async () => {
+  const cat = catSelect.value;
+  if (!cat) return;
+  const name = (prompt(`Новая подкатегория в «${cat}»:`) || '').trim();
+  if (!name) return;
+  const r = await fetch(`/api/categories/${encodeURIComponent(cat)}/subcategories`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name })
+  });
+  const j = await r.json();
+  if (!r.ok) { alert(j.error || 'Ошибка'); return; }
+  categoriesTree = j.categories || {};
+  renderCategoryOptions(cat, name);
+});
+
+loadCategories();
 
 function setFile(file) {
   selectedFile = file;
   badgeName.textContent = file.name;
   badgeSize.textContent = formatBytes(file.size);
   fileBadge.classList.add('show');
-  if (!catInput.value) catInput.value = guessCategory(file.name);
-  startBtn.disabled = false;
+  updateStartBtnState();
 }
 
 function clearFile() {
   selectedFile = null;
   fileInput.value = '';
   fileBadge.classList.remove('show');
-  catInput.value = '';
-  startBtn.disabled = true;
+  updateStartBtnState();
 }
 
 browseLink.addEventListener('click',  () => fileInput.click());
@@ -1009,7 +1124,8 @@ startBtn.addEventListener('click', async () => {
 
   const fd = new FormData();
   fd.append('audio',       selectedFile);
-  fd.append('category',    catInput.value.trim());
+  fd.append('category',    catSelect.value);
+  fd.append('subcategory', subcatSelect.value);
   fd.append('language',    langSelect.value);
   fd.append('llm_enabled', llmToggle.checked ? 'true' : 'false');
 

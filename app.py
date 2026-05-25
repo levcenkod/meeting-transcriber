@@ -23,7 +23,8 @@ INPUT_DIR  = Path("/input")
 OUTPUT_DIR = Path("/output")
 OBSIDIAN_DIR = OUTPUT_DIR / "_obsidian"
 VAULT_DIR    = Path("/vault")                 # host Obsidian Vault (mounted)
-SETTINGS_FILE = OUTPUT_DIR / "_settings.json"  # UI-editable runtime settings
+SETTINGS_FILE   = OUTPUT_DIR / "_settings.json"    # UI-editable runtime settings
+CATEGORIES_FILE = OUTPUT_DIR / "_categories.json"  # user-defined cat/subcat tree
 
 
 # ── Runtime settings (UI-editable, persist on disk) ──────────────────────────
@@ -82,6 +83,54 @@ def _vault_available() -> bool:
         return VAULT_DIR.is_dir()
     except Exception:
         return False
+
+
+# ── Categories store (user-defined Category → Subcategory tree) ──────────────
+
+_DEFAULT_CATEGORIES = {
+    "Общее": ["Без подкатегории"],
+}
+
+
+def _load_categories() -> dict:
+    """Return {category_name: [subcategory, …], …}. Initialize file on first run."""
+    try:
+        if CATEGORIES_FILE.exists():
+            data = json.loads(CATEGORIES_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                # Normalise: every value must be a list of strings
+                out: dict[str, list[str]] = {}
+                for k, v in data.items():
+                    if isinstance(k, str) and k.strip():
+                        subs = v if isinstance(v, list) else []
+                        out[k.strip()] = [s.strip() for s in subs
+                                          if isinstance(s, str) and s.strip()]
+                return out
+    except Exception:
+        pass
+    return dict(_DEFAULT_CATEGORIES)
+
+
+def _save_categories(data: dict) -> dict:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    CATEGORIES_FILE.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return data
+
+
+_CAT_NAME_RE = re.compile(r"[<>:\"/\\|?*\x00-\x1f]")
+
+
+def _valid_cat_name(name: str) -> bool:
+    if not name or not isinstance(name, str):
+        return False
+    name = name.strip()
+    if not name or len(name) > 80:
+        return False
+    if name in (".", ".."):
+        return False
+    return _CAT_NAME_RE.search(name) is None
 
 
 _DASHBOARD_TEMPLATE = """\
@@ -170,16 +219,19 @@ def _slugify_filename(name: str, max_len: int = 80) -> str:
     return s or "meeting"
 
 
-def _create_obsidian_note(out_dir: Path, stem: str) -> Path | None:
+def _create_obsidian_note(out_dir: Path, stem: str,
+                          category: str, subcategory: str) -> Path | None:
     """Create a nicely-named Obsidian-friendly copy of the summary.
 
     Reads {stem}_summary.md (already includes YAML frontmatter) and
     {stem}_meta.json (for title/date/attendees) and writes it under
-    OUTPUT_DIR/_obsidian/{Category}/{YYYY-MM-DD} — {Title}.md
-    with wiki-links wrapped around known attendees.
+    OUTPUT_DIR/_obsidian/{Category}/{Subcategory}/{YYYY-MM-DD} — {Title}.md
+    plus a sibling copy of the (non-anonymized) speakers transcript.
+    Also mirrors both files into the mounted Obsidian Vault when available.
     """
-    meta_path    = out_dir / f"{stem}_meta.json"
-    summary_path = out_dir / f"{stem}_summary.md"
+    meta_path     = out_dir / f"{stem}_meta.json"
+    summary_path  = out_dir / f"{stem}_summary.md"
+    speakers_path = out_dir / f"{stem}_speakers.txt"
     if not (meta_path.exists() and summary_path.exists()):
         return None
     try:
@@ -189,37 +241,64 @@ def _create_obsidian_note(out_dir: Path, stem: str) -> Path | None:
 
     title     = meta.get("title", "Совещание")
     date      = meta.get("date", "")
-    category  = meta.get("category") or out_dir.name
     attendees = [a for a in meta.get("attendees", []) if a and not a.startswith("SPEAKER_")]
 
     content = summary_path.read_text(encoding="utf-8")
 
     # Wrap attendee names in [[wiki-links]] inside the body
-    # (only those that are real names, longest first to avoid partial matches)
     if attendees:
         body_start = content.find("\n\n", content.find("---\n", 4) + 4) if content.startswith("---") else 0
         head, body = content[:body_start], content[body_start:]
         for name in sorted(attendees, key=len, reverse=True):
-            # Skip if already wiki-linked
             pattern = re.compile(rf"(?<!\[)\b{re.escape(name)}\b(?!\]\])")
             body = pattern.sub(f"[[{name}]]", body)
         content = head + body
 
-    folder = OBSIDIAN_DIR / _slugify_filename(category, 40)
-    folder.mkdir(parents=True, exist_ok=True)
-    fname = f"{date} — {_slugify_filename(title)}.md" if date else f"{_slugify_filename(title)}.md"
-    dest = folder / fname
-    dest.write_text(content, encoding="utf-8")
+    cat_slug = _slugify_filename(category, 40) or "Общее"
+    sub_slug = _slugify_filename(subcategory, 40) or "Без подкатегории"
 
-    # Also write to mounted Obsidian Vault if available
+    base_name = f"{date} — {_slugify_filename(title)}" if date else _slugify_filename(title)
+    summary_fname    = f"{base_name}.md"
+    transcript_fname = f"{base_name} — транскрипт.md"
+
+    transcript_md = None
+    if speakers_path.exists():
+        try:
+            raw = speakers_path.read_text(encoding="utf-8")
+            transcript_md = (
+                f"---\n"
+                f"type: meeting-transcript\n"
+                f"meeting: \"[[{base_name}]]\"\n"
+                f"date: {date}\n"
+                f"category: {category}\n"
+                f"subcategory: {subcategory}\n"
+                f"---\n\n"
+                f"# Транскрипт — {title}\n\n"
+                f"> Связанная заметка: [[{base_name}]]\n\n"
+                f"```\n{raw}\n```\n"
+            )
+        except Exception:
+            transcript_md = None
+
+    # ── Local mirror inside /output/_obsidian/ ───────────────────────────────
+    folder = OBSIDIAN_DIR / cat_slug / sub_slug
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / summary_fname
+    dest.write_text(content, encoding="utf-8")
+    if transcript_md:
+        (folder / transcript_fname).write_text(transcript_md, encoding="utf-8")
+
+    # ── Also write to mounted Obsidian Vault if available ────────────────────
     if _vault_available():
         try:
             sub = _vault_subfolder()
             vault_root = VAULT_DIR / sub
             _ensure_dashboard(vault_root, sub)
-            cat_folder = vault_root / _slugify_filename(category, 40)
+            cat_folder = vault_root / cat_slug / sub_slug
             cat_folder.mkdir(parents=True, exist_ok=True)
-            (cat_folder / fname).write_text(content, encoding="utf-8")
+            (cat_folder / summary_fname).write_text(content, encoding="utf-8")
+            if transcript_md:
+                (cat_folder / transcript_fname).write_text(transcript_md, encoding="utf-8")
         except Exception:
             pass
 
@@ -281,20 +360,24 @@ def _run_step(job: dict, cmd: list, env: dict, label: str) -> bool:
         return False
 
 
-def _pipeline(job_id: str, audio_path: Path, category: str, language: str, llm_enabled: bool) -> None:
+def _pipeline(job_id: str, audio_path: Path, category: str, subcategory: str,
+              language: str, llm_enabled: bool) -> None:
     """Main pipeline — runs in a background daemon thread."""
     job = _jobs[job_id]
     stem    = audio_path.stem
-    out_dir = OUTPUT_DIR / category
+    cat_slug = _slugify_filename(category, 40) or "Общее"
+    sub_slug = _slugify_filename(subcategory, 40) or "Без подкатегории"
+    out_subdir = f"{cat_slug}/{sub_slug}"
+    out_dir = OUTPUT_DIR / cat_slug / sub_slug
     out_dir.mkdir(parents=True, exist_ok=True)
     job["status"] = "running"
     job["out_dir"] = out_dir
     job["stem"]    = stem
 
     try:
-        # ── Build environment ────────────────────────────────────────────────
+        # ── Build environment ────────────────────────────────────────────────────
         env = _effective_env()
-        env["OUTPUT_SUBDIR"] = category
+        env["OUTPUT_SUBDIR"] = out_subdir
         env["LANGUAGE"]      = language
 
         # Rewrite localhost → host.docker.internal so summarize.py can reach
@@ -343,18 +426,19 @@ def _pipeline(job_id: str, audio_path: Path, category: str, language: str, llm_e
 
         job["result"] = {
             "primary": primary, "secondary": secondary,
-            "summary_md": summary_md, "category": category,
+            "summary_md": summary_md,
+            "category": category, "subcategory": subcategory,
         }
         # ── Create Obsidian-friendly copy (if meta available) ────────────────
         try:
-            obs = _create_obsidian_note(out_dir, stem)
+            obs = _create_obsidian_note(out_dir, stem, category, subcategory)
             if obs:
                 _log(job, f"📒 Obsidian-заметка: {obs.relative_to(OUTPUT_DIR)}", "ok")
         except Exception as e:
             _log(job, f"Не удалось создать Obsidian-заметку: {e}", "warn")
 
         job["status"] = "done"
-        _log(job, f"✅ Готово! Файлы сохранены в output/{category}/", "ok")
+        _log(job, f"✅ Готово! Файлы сохранены в output/{out_subdir}/", "ok")
 
     except Exception as exc:
         _log(job, f"Неожиданная ошибка: {exc}", "error")
@@ -482,6 +566,67 @@ def api_vault_mkdir():
         return jsonify({"ok": False, "error": str(exc)}), 200
 
 
+@app.route("/api/categories", methods=["GET", "POST"])
+def api_categories():
+    """List or create user-defined categories.
+
+    GET  -> {"categories": {name: [subcategories]}}
+    POST -> body {"name": "<Cat>"} adds a top-level category.
+    """
+    if request.method == "GET":
+        return jsonify({"categories": _load_categories()})
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not _valid_cat_name(name):
+        return jsonify({"ok": False, "error": "недопустимое имя"}), 400
+    cats = _load_categories()
+    if name in cats:
+        return jsonify({"ok": False, "error": "уже существует"}), 409
+    cats[name] = []
+    _save_categories(cats)
+    return jsonify({"ok": True, "categories": cats})
+
+
+@app.route("/api/categories/<path:cat>", methods=["DELETE"])
+def api_categories_delete(cat: str):
+    cat = (cat or "").strip()
+    cats = _load_categories()
+    if cat not in cats:
+        return jsonify({"ok": False, "error": "не найдена"}), 404
+    del cats[cat]
+    _save_categories(cats)
+    return jsonify({"ok": True, "categories": cats})
+
+
+@app.route("/api/categories/<path:cat>/subcategories", methods=["POST"])
+def api_subcategories_add(cat: str):
+    cat = (cat or "").strip()
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not _valid_cat_name(name):
+        return jsonify({"ok": False, "error": "недопустимое имя"}), 400
+    cats = _load_categories()
+    if cat not in cats:
+        return jsonify({"ok": False, "error": "категория не найдена"}), 404
+    if name in cats[cat]:
+        return jsonify({"ok": False, "error": "уже существует"}), 409
+    cats[cat].append(name)
+    _save_categories(cats)
+    return jsonify({"ok": True, "categories": cats})
+
+
+@app.route("/api/categories/<path:cat>/subcategories/<path:sub>", methods=["DELETE"])
+def api_subcategories_delete(cat: str, sub: str):
+    cat = (cat or "").strip()
+    sub = (sub or "").strip()
+    cats = _load_categories()
+    if cat not in cats or sub not in cats.get(cat, []):
+        return jsonify({"ok": False, "error": "не найдена"}), 404
+    cats[cat] = [s for s in cats[cat] if s != sub]
+    _save_categories(cats)
+    return jsonify({"ok": True, "categories": cats})
+
+
 @app.route("/upload", methods=["POST"])
 def upload():
     if any(j["status"] == "running" for j in _jobs.values()):
@@ -500,9 +645,21 @@ def upload():
     audio_path = INPUT_DIR / filename
     f.save(str(audio_path))
 
-    category    = (request.form.get("category") or "").strip() or _get_category(filename)
+    category    = (request.form.get("category") or "").strip()
+    subcategory = (request.form.get("subcategory") or "").strip()
     language    = request.form.get("language", "ru")
     llm_enabled = request.form.get("llm_enabled", "true") == "true"
+
+    if not _valid_cat_name(category) or not _valid_cat_name(subcategory):
+        return jsonify({"error": "Выберите категорию и подкатегорию перед запуском"}), 400
+
+    # Auto-register the chosen pair so it persists for next time
+    cats = _load_categories()
+    if category not in cats:
+        cats[category] = []
+    if subcategory not in cats[category]:
+        cats[category].append(subcategory)
+    _save_categories(cats)
 
     job_id = str(uuid.uuid4())[:8]
     _jobs[job_id] = {
@@ -510,6 +667,7 @@ def upload():
         "result":      None,
         "filename":    filename,
         "category":    category,
+        "subcategory": subcategory,
         "started_at":  time.time(),
         "finished_at": None,
         "log_buffer":  [],     # list of message dicts (replayed on (re)connect)
@@ -518,11 +676,12 @@ def upload():
 
     threading.Thread(
         target=_pipeline,
-        args=(job_id, audio_path, category, language, llm_enabled),
+        args=(job_id, audio_path, category, subcategory, language, llm_enabled),
         daemon=True,
     ).start()
 
-    return jsonify({"job_id": job_id, "filename": filename, "category": category})
+    return jsonify({"job_id": job_id, "filename": filename,
+                    "category": category, "subcategory": subcategory})
 
 
 @app.route("/stream/<job_id>")
