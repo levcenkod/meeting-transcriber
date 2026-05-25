@@ -1,5 +1,7 @@
 ﻿# ─── Секреты ──────────────────────────────────────────────────────────────────
 .env
+.env.local
+.env.*.local
 
 # ─── Аудио / видео файлы (тестовые, не коммитим) ─────────────────────────────
 *.mp3
@@ -25,22 +27,57 @@ processed/
 failed/
 logs/
 
+# ─── Obsidian vault (локальный, не коммитим содержимое) ──────────────────────
+obsidian_vault/
+!obsidian_vault/.gitkeep
+
+# ─── Артефакты и временные документы по проекту ──────────────────────────────
+# Транскрипты, разборы, эталоны — локальные рабочие материалы
+*_speakers.txt
+*_anonymized_speakers.txt
+*_anonymization_map.json
+*_analysis.json
+*_summary.md
+*_meta.json
+*_decisions.json
+intermediate/
+
 # ─── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
+*.egg-info/
 .venv/
 venv/
+env/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
+.tox/
 
-# ─── IDE ──────────────────────────────────────────────────────────────────────
+# ─── IDE / редакторы ──────────────────────────────────────────────────────────
 .idea/
 .vscode/
 .cursorignore
 .cursorindexingignore
+*.swp
+*.swo
+*~
 
 # ─── OS ───────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# ─── Docker ───────────────────────────────────────────────────────────────────
+.docker/
+
+# ─── Локальные заметки и черновики (не для репозитория) ──────────────────────
+NOTES.md
+TODO.local.md
+scratch/
+*.local.md
+

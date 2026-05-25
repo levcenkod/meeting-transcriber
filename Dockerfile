@@ -63,6 +63,7 @@ RUN chmod +x /scripts/entrypoint.sh
 RUN mkdir -p /app/templates /app/static
 COPY app.py /app/app.py
 COPY templates/index.html /app/templates/index.html
+COPY templates/settings.html /app/templates/settings.html
 COPY static/ /app/static/
 
 WORKDIR /

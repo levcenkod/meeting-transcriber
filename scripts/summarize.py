@@ -207,6 +207,9 @@ _MAP_SYSTEM = """\
   "time_range": {"start": "HH:MM:SS", "end": "HH:MM:SS"},
   "summary": "5-10 предложений: какие разделы/темы обсуждались по порядку, какие статусы и приоритеты зафиксированы, какая бизнес-логика проявилась. Не пиши абстрактно 'обсуждали дизайн' — пиши конкретно 'обсудили раздел X, статус Y, потому что Z'.",
 
+  "meeting_type": "planning|audit|review|kickoff|brainstorm|standup|one_on_one|retro|demo|other",
+  "meeting_context": "1-3 предложения: фон встречи — что было ДО встречи, на каком этапе проект, кто подрядчики/участники, какая история. Не путать с пересказом — это именно исторический контекст (напр. 'подрядчик сдал работу, качество спорное'). Пиши только если в фрагменте явно звучит; иначе null.",
+
   "section_statuses": [
     {
       "section": "название раздела/модуля/функции (напр. 'Ценообразование', 'Панель сборщика', 'Клиентская часть')",
@@ -244,8 +247,9 @@ _MAP_SYSTEM = """\
       "decision": "что решили",
       "context": "почему это решили",
       "speakers": ["имя"],
+      "quote": "прямая цитата, фиксирующая решение (до ш2 слов), обязательно из реального текста или null",
       "source_time": "HH:MM:SS или null",
-      "evidence": "короткая цитата из transcript",
+      "evidence": "короткая цитата из transcript (может совпадать с quote)",
       "confidence": "high|medium|low"
     }
   ],
@@ -286,9 +290,22 @@ _MAP_SYSTEM = """\
       "question": "вопрос (если по теме нет финального решения или решение отложено — это открытый вопрос)",
       "owner": "имя или null",
       "context": "контекст",
+      "positions": [
+        {"participant": "имя", "stance": "позиция этого человека кратко"}
+      ],
       "source_time": "HH:MM:SS или null"
     }
   ],
+
+  "meta_observations": [
+    {
+      "observation": "наблюдение О ПРОЦЕССЕ встречи, не о содержании. Примеры: 'встреча без повестки', 'фиксация решений держится на одном человеке', 'нет процесса приёмки', 'приоритеты выясняются в конце', 'возвраты к пройденному', 'задачи без владельцев/сроков'",
+      "severity": "high|medium|low",
+      "root_cause": "корневая причина или null",
+      "source_time": "HH:MM:SS или null"
+    }
+  ],
+
   "important_facts": ["факт"],
   "mentioned_topics": ["тема"]
 }
@@ -302,6 +319,11 @@ _MAP_SYSTEM = """\
 - Если раздел упомянут со статусом «есть/нет/в разработке/переделать/отложить/не приоритет» — обязательно в section_statuses.
 - Если в обсуждении проскочила бизнес-логика (как должно работать, для кого, в каком контексте) — обязательно в business_context.
 - В blockers/risks ставь `"inferred": true` если проблема явно не названа словом «блокер»/«риск», а выведена из контекста; иначе `false`.
+- meeting_type: определи ОДИН раз по характеру фрагмента (в merge мы возьмём наиболее частый). audit — если разбирают сданную работу; planning — если планируют; review — если смотрят результаты.
+- meeting_context: ОЧЕНЬ важно. Это ИСТОРИЯ проекта, которую люди упоминают между прочим («это нам подрядчик сделал», «мы уже заплатили», «работаем в таблицах пока»). Это НЕ пересказ встречи.
+- meta_observations — это наблюдения ОБ ОРГАНИЗАЦИИ встречи (не было повестки, всё держится на одном человеке, нет владельцев у задач, нет процесса приёмки работ и т.п.). Не путать с бизнес-рисками. Пиши только если явно видно в фрагменте.
+- decisions[].quote — только реальные слова спикера из transcript, без перефраза. Отрежь до самой сути.
+- open_questions[].positions — включай только если в обсуждении были разные мнения участников; иначе пустой массив.
 - Сохраняй имена спикеров как они есть в transcript.
 - В тексте могут встречаться токены вида PERSON_001, COMPANY_001, LOCATION_001, EMAIL_001, PHONE_001, DOMAIN_001, URL_001, TRANSACTION_001 — это анонимизированные реальные сущности. Обращайся с ними как с обычными именами собственными.\
 """
@@ -337,8 +359,11 @@ def extract_chunk(
             "chunk_id": chunk_id,
             "time_range": {"start": time_start, "end": time_end},
             "summary": raw[:500],
+            "meeting_type": None, "meeting_context": None,
+            "section_statuses": [], "sequence": [], "business_context": [],
             "decisions": [], "action_items": [], "blockers": [],
-            "risks": [], "open_questions": [], "important_facts": [],
+            "risks": [], "open_questions": [], "meta_observations": [],
+            "important_facts": [],
             "mentioned_topics": [], "_parse_error": True,
         }
 
@@ -356,6 +381,8 @@ def extract_chunk(
 def merge_chunks(chunk_results: list[dict]) -> dict:
     merged: dict = {
         "chunk_summaries":   [],
+        "meeting_type_votes": [],
+        "meeting_context_parts": [],
         "section_statuses":  [],
         "sequence":          [],
         "business_context":  [],
@@ -364,6 +391,7 @@ def merge_chunks(chunk_results: list[dict]) -> dict:
         "blockers":          [],
         "risks":              [],
         "open_questions":    [],
+        "meta_observations": [],
         "important_facts":   [],
         "mentioned_topics":  [],
     }
@@ -374,9 +402,16 @@ def merge_chunks(chunk_results: list[dict]) -> dict:
                 "time_range": cr.get("time_range", {}),
                 "summary":    cr["summary"],
             })
+        mt = cr.get("meeting_type")
+        if mt and isinstance(mt, str):
+            merged["meeting_type_votes"].append(mt.strip().lower())
+        mc = cr.get("meeting_context")
+        if mc and isinstance(mc, str) and mc.strip():
+            merged["meeting_context_parts"].append(mc.strip())
         for key in ("section_statuses", "sequence", "business_context",
                     "decisions", "action_items", "blockers", "risks",
-                    "open_questions", "important_facts", "mentioned_topics"):
+                    "open_questions", "meta_observations",
+                    "important_facts", "mentioned_topics"):
             items = cr.get(key, [])
             if isinstance(items, list):
                 merged[key].extend(items)
@@ -439,6 +474,8 @@ def deduplicate(merged: dict) -> dict:
     merged["blockers"]       = _dedup_by_key(merged["blockers"],       "blocker")
     merged["risks"]          = _dedup_by_key(merged["risks"],          "risk")
     merged["open_questions"] = _dedup_by_key(merged["open_questions"], "question")
+    merged["meta_observations"] = _dedup_by_key(
+        merged.get("meta_observations", []), "observation")
 
     seen: set[str] = set()
     unique_topics: list[str] = []
@@ -466,35 +503,82 @@ def evidence_check(merged: dict) -> dict:
 # ─── REDUCE: final summary ────────────────────────────────────────────────────
 
 _REDUCE_SYSTEM = """\
-Ты — аналитик рабочих встреч. Тебе передан структурированный анализ планёрки.
+Ты — аналитик рабочих встреч. Тебе передан структурированный анализ.
 Сформируй итоговую заметку в формате **Obsidian-ready Markdown** строго по шаблону ниже.
 
 ЖЁСТКИЕ ТРЕБОВАНИЯ К ВЫВОДУ:
 1. Возвращай ТОЛЬКО Markdown. Никакого текста до или после, никаких ```markdown ограждений вокруг всего ответа.
 2. НЕ используй HTML-теги вообще (никаких <br>, <div>, <details>, <summary>, &nbsp; и пр.).
-3. Action items пиши в формате **Obsidian Tasks**:
-   - [ ] Кратко суть задачи 👤 @Имя 📅 YYYY-MM-DD
-   Если ответственный неизвестен — опусти "👤 @...". Если дедлайн неизвестен — опусти "📅 ...".
-4. Ключевые сущности (продукты, технологии, проекты, команды, важные термины) оборачивай в wiki-links: [[Docker]], [[Whisper]], [[Obsidian]], [[Backend]], [[API]] и т.п. Названия разделов системы тоже оборачивай: [[Ценообразование]], [[Клиенты]], [[Панель сборщика]]. НЕ оборачивай людей.
+3. Action items пиши КАК ОБЫЧНЫЙ МАРКИРОВАННЫЙ СПИСОК (НЕ чекбоксы, НЕ Obsidian Tasks). Формат:
+   - **Суть задачи** — ответственный: Имя, срок: YYYY-MM-DD.
+   Если ответственного нет — пиши «ответственный: не назначен». Если срока нет — «срок: не назначен». Никаких эмодзи (👤📅), никаких `[ ]`.
+4. Ключевые сущности (продукты, технологии, проекты, разделы системы) оборачивай в wiki-links: [[Docker]], [[Ценообразование]], [[Панель сборщика]], [[Telegram]], [[Backend]]. НЕ оборачивай людей.
 5. Обязательно добавь раздел "## Карта обсуждения" с Mermaid mindmap внутри ```mermaid``` блока.
 6. Сохраняй язык оригинала транскрипта (если транскрипт на русском — пиши по-русски).
-7. Не выдумывай факты — используй только переданные данные. Если поля нет — пиши "не указан".
-8. ОБЯЗАТЕЛЬНО используй данные из section_statuses, sequence, business_context. Это ключевая операционная информация — не сворачивай её в общее «обсудили дизайн».
+7. Не выдумывай факты. Используй только переданные данные. Если поля нет — пиши "не указан" или опускай блок (по правилам ниже).
+8. ОБЯЗАТЕЛЬНО используй данные из section_statuses, sequence, business_context, meta_observations.
 9. Action items должны быть КОНКРЕТНЫМИ — не «правки в панели сборщика», а «добавить инвентаризацию в [[Панель сборщика]]».
+10. В блоках «Принятые решения» цитата (поле `quote`) выводится курсивом и с тайм-кодом.
+11. В «Открытых вопросах» если есть `positions` — выведи позиции сторон в скобках «(Имя — позиция; Имя — позиция)».
+12. Если meta.orphan_pct ≥ 50 ИЛИ нет ни одного action item с owner+deadline — обязательно добавь в «Наблюдения о встрече» пункт «Активность ≠ решения: задачи зафиксированы без владельцев/сроков».
+13. Если meta.anonymizer_artifacts_present = true — обязательно добавь блок «## Оговорка по источнику» в самом конце.
+14. Блок «## Взгляд бизнес-коуча» — это ТВОЙ собственный аналитический разбор поверх данных. Не цитируй сырые поля, а синтезируй: что главное, в каком порядке делать, какие риски недооценены, как улучшить следующую встречу. Пиши конкретно, без воды, без общих фраз про «вовлечённость» и «синергию».
 
 ШАБЛОН (соблюдай порядок и точные заголовки):
 
 ---
 type: meeting-summary
+meeting_type: <meta.meeting_type_key или "other">
 ---
 
+> [!info] Метаданные
+> **Тип:** <meta.meeting_type_label>
+> **Длительность:** <от meta.time_start до meta.time_end, если оба есть; иначе «не указана»>
+> **Участники:** <через запятую из meta.participants; если пусто — «не указаны»>
+
 ## Кратко
-2–5 предложений: о чём была встреча и главный итог. Упомяни главные приоритеты и текущий этап работ.
+2–5 предложений нарративом: о чём была встреча, главный итог, ключевые приоритеты, текущий этап работ. Стиль: связный текст, не bullet'ы.
+
+## Контекст
+1–3 предложения: фон встречи (что было ДО встречи, на каком этапе проект, кто подрядчики, какая история).
+Если meta.meeting_context = null И business_context пуст — опусти этот блок целиком.
+
+## Действия (Action Items)
+- **Описание задачи** — ответственный: Имя, срок: 2025-01-15.
+- **Другая задача** — ответственный: Имя, срок: не назначен.
+
+Если действий много (>5) — сгруппируй по разделу (поле `section`):
+### <Название раздела>
+- **<Задача>** — ответственный: …, срок: …
+
+Если задач нет — «Конкретных action items не зафиксировано».
+
+## Взгляд бизнес-коуча
+> [!tip] Аналитика и рекомендации
+> Это синтез поверх данных. Без воды.
+
+**Главные приоритеты (top-3):**
+1. <приоритет 1 — почему именно он, что заблокирует если не сделать>
+2. <приоритет 2>
+3. <приоритет 3>
+
+**Предлагаемая стратегия:**
+2–4 предложения: в каком порядке двигаться, что распараллелить, что отложить. Опирайся на section_statuses (статус «нет» с высоким приоритетом — кандидат на первый ход) и sequence (зависимости).
+
+**Слепые зоны и недооценённые риски:**
+- <риск/блокер, который команда явно НЕ обсудила или преуменьшила — выводи из inferred=true блокеров/рисков и отсутствия процессов в meta_observations>
+- <…>
+
+**Как провести следующую встречу продуктивнее:**
+- <конкретный совет, привязанный к meta_observations или к тому что видно по данным: повестка, тайминг, фиксация владельцев, критерии приёмки, и т.д.>
+- <…>
+
+(Этот блок пиши ВСЕГДА, даже если данных мало — тогда отметь это явно: «Данных мало, гипотетически:…». Минимум 3 приоритета, минимум 2 совета по встрече.)
 
 ## Карта обсуждения
 ```mermaid
 mindmap
-  root((Планёрка))
+  root((Встреча))
     Тема1
       Подтема1
       Подтема2
@@ -505,32 +589,34 @@ mindmap
     Риски
       Риск1
 ```
-(Заполни реальными темами/разделами из анализа. Минимум 3 ветки, максимум 8. Короткие 1-3-словные узлы. Без кавычек внутри узлов.)
+(Заполни реальными темами/разделами. Минимум 3 ветки, максимум 8. Короткие 1–3-словные узлы. Без кавычек.)
 
 ## Статус по разделам
 | Раздел | Статус | Приоритет | Почему | Что делать |
 |---|---|---|---|---|
-(Заполни из section_statuses. Статус словами: «есть», «нет», «в разработке», «требует переделки», «отложено», «убрано». Приоритет: «высокий», «средний», «низкий», «—». Колонка «Почему» — из reasoning. Колонка «Что делать» — из notes. Если разделов нет — таблицу всё равно оставь с шапкой.)
+(Заполни из section_statuses. Статус словами: «есть», «нет», «в разработке», «требует переделки», «отложено», «убрано». Приоритет: «высокий», «средний», «низкий», «—». Если разделов нет — таблицу с шапкой оставь.)
 
 ## Последовательность работ
-Пронумерованный список из sequence (по полю `order`), отражающий порядок и зависимости. Формат:
+Пронумерованный список из sequence, отражающий порядок и зависимости. Группируй:
 1. **Сейчас в работе:** … (что и от кого зависит)
 2. **Дальше:** …
 3. **Не приоритет / отложено:** …
-Если данных нет — напиши «Чёткая последовательность не зафиксирована».
+Если данных нет — «Чёткая последовательность не зафиксирована».
 
 ## Бизнес-контекст
 Маркированный список из business_context. Каждый пункт: **тема** — почему важно — детали.
-Если данных нет — раздел опусти.
-
-## Действия (Action Items)
-- [ ] Описание задачи 👤 @Имя 📅 2025-01-15
-- [ ] Другая задача 👤 @Имя
-(Все action_items сюда, конкретными формулировками. Группируй по разделам если их много.)
+Если business_context пуст — опусти раздел.
 
 ## Принятые решения
-| Решение | Контекст | Участники | Подтверждение |
-|---|---|---|---|
+Для каждого decision выводи блок (НЕ таблица):
+
+**1. <decision>**
+> *«<quote>» (<source_time>)*
+- Контекст: <context>
+- Участники: <speakers через запятую или «не указаны»>
+
+(Если quote отсутствует — опусти строку с цитатой. Если source_time нет — пиши «время не указано».)
+Если решений нет — «Финальных решений не зафиксировано».
 
 ## Блокеры
 | Блокер | Влияние | Ответственный | Источник | Подтверждение |
@@ -542,14 +628,27 @@ mindmap
 |---|---|---|---|---|
 
 ## Открытые вопросы
-| Вопрос | Ответственный | Контекст | Подтверждение |
-|---|---|---|---|
+Для каждого вопроса — отдельный пункт:
+- **<question>** — <context>. Ответственный: <owner или «не указан»>.
+  - Позиции: <если positions есть — «Имя — позиция; Имя — позиция»; иначе строку опусти>
+
+## Наблюдения о встрече
+Маркированный список из meta_observations. Формат:
+- **<observation>** [severity: <severity>]. <root_cause если есть>.
+
+Также сюда добавляй системные наблюдения:
+- Если meta.orphan_pct ≥ 50: «**Активность ≠ решения** [severity: средняя]. Из <total> задач <orphaned> без владельца или срока. Список дел сам по себе не равен прогрессу.»
+
+Если ни meta_observations, ни системных наблюдений нет — раздел опусти.
+
+## Оговорка по источнику
+(Включай только если meta.anonymizer_artifacts_present = true.)
+Транскрипт прошёл анонимизацию: имена, компании и контакты заменены тегами вида PERSON_NNN, COMPANY_NNN. Часть тайм-кодов могла быть искажена анонимайзером — относись к ним как к приблизительным. Имена в этой заметке восстановлены через обратное сопоставление; если встретился тег вместо имени — значит сопоставление не сработало для конкретной сущности.
 
 ПРАВИЛА:
-- Если ответственный неизвестен — пиши "не указан".
-- Если дедлайн неизвестен — опусти 📅 (или пиши "не указан" в таблице).
-- Для каждого пункта в таблицах добавляй evidence/source_time если есть.
-- Если раздел пустой — оставь только заголовок и пустую таблицу с шапкой.\
+- Если ответственный неизвестен — пиши «не назначен».
+- Если дедлайн неизвестен — пиши «не назначен».
+- Не дублируй информацию между блоками: контекст встречи в «Контекст», бизнес-обоснование в «Бизнес-контекст», процессные наблюдения в «Наблюдения о встрече», синтез и стратегия — только во «Взгляд бизнес-коуча».\
 """
 
 
@@ -565,8 +664,91 @@ def _strip_leading_frontmatter(md: str) -> str:
     return s[m.end():]
 
 
-def generate_final_summary(client: "OpenAI", model: str, merged: dict) -> str:
+_MEETING_TYPE_LABELS = {
+    "planning":   "Планёрка",
+    "audit":      "Аудит / разбор",
+    "review":     "Ревью результатов",
+    "kickoff":    "Kickoff",
+    "brainstorm": "Брейншторм",
+    "standup":    "Стендап",
+    "one_on_one": "1:1",
+    "retro":      "Ретро",
+    "demo":       "Демо",
+    "other":      "Рабочая встреча",
+}
+
+
+def _compute_meta_stats(merged: dict, transcript: str | None = None) -> dict:
+    """Compute meeting-level meta facts to enrich the REDUCE prompt."""
+    # Most-common meeting_type vote
+    votes = merged.get("meeting_type_votes", [])
+    mt_key = None
+    if votes:
+        from collections import Counter
+        mt_key = Counter(votes).most_common(1)[0][0]
+    mt_label = _MEETING_TYPE_LABELS.get(mt_key or "", _MEETING_TYPE_LABELS["other"])
+
+    # Meeting context: longest non-duplicate parts joined
+    ctx_parts = merged.get("meeting_context_parts", [])
+    seen_ctx: list[str] = []
+    for p in ctx_parts:
+        if not any(_jaccard(p, s) >= 0.6 for s in seen_ctx):
+            seen_ctx.append(p)
+    meeting_context = " ".join(seen_ctx).strip() if seen_ctx else None
+
+    # Action item orphan ratio (no owner OR no deadline)
+    actions = merged.get("action_items", [])
+    total_a = len(actions)
+    orphaned = sum(
+        1 for a in actions
+        if not (a.get("owner") and str(a.get("owner")).lower() not in ("null", "none", ""))
+        or not (a.get("deadline") and str(a.get("deadline")).lower() not in ("null", "none", ""))
+    )
+    orphan_pct = round(100 * orphaned / total_a) if total_a else 0
+
+    # Anonymizer artefacts in transcript
+    anon_present = False
+    if transcript:
+        anon_present = bool(re.search(
+            r"\b(PERSON|COMPANY|LOCATION|EMAIL|PHONE|DOMAIN|URL|TRANSACTION)_\d{3,}\b",
+            transcript,
+        ))
+
+    # Time range from chunk summaries
+    cs = merged.get("chunk_summaries", [])
+    time_start = cs[0]["time_range"].get("start") if cs and cs[0].get("time_range") else None
+    time_end   = cs[-1]["time_range"].get("end")  if cs and cs[-1].get("time_range") else None
+
+    # Participants — collected from decisions.speakers and action_items.owner
+    participants: set[str] = set()
+    for d in merged.get("decisions", []):
+        for s in (d.get("speakers") or []):
+            if s and isinstance(s, str):
+                participants.add(s.strip())
+    for a in merged.get("action_items", []):
+        owner = a.get("owner")
+        if owner and isinstance(owner, str) and owner.lower() not in ("null", "none"):
+            participants.add(owner.strip())
+
+    return {
+        "meeting_type_key":   mt_key,
+        "meeting_type_label": mt_label,
+        "meeting_context":    meeting_context,
+        "time_start":         time_start,
+        "time_end":           time_end,
+        "participants":       sorted(participants),
+        "action_items_total": total_a,
+        "action_items_orphaned": orphaned,
+        "orphan_pct":         orphan_pct,
+        "anonymizer_artifacts_present": anon_present,
+    }
+
+
+def generate_final_summary(client: "OpenAI", model: str, merged: dict,
+                           transcript: str | None = None) -> str:
+    meta = _compute_meta_stats(merged, transcript=transcript)
     input_data = {
+        "meta":              meta,
         "chunk_summaries":   [cs["summary"] for cs in merged.get("chunk_summaries", [])],
         "section_statuses":  merged.get("section_statuses", []),
         "sequence":          merged.get("sequence", []),
@@ -576,6 +758,7 @@ def generate_final_summary(client: "OpenAI", model: str, merged: dict) -> str:
         "blockers":          merged.get("blockers", []),
         "risks":              merged.get("risks", []),
         "open_questions":    merged.get("open_questions", []),
+        "meta_observations": merged.get("meta_observations", []),
         "important_facts":   merged.get("important_facts", []),
         "mentioned_topics":  merged.get("mentioned_topics", []),
     }
@@ -754,7 +937,7 @@ def summarize(speakers_file: Path) -> None:
 
     # ── REDUCE: final summary ─────────────────────────────────────────────────
     print("[INFO] Generating final summary (REDUCE)...")
-    summary_md = generate_final_summary(client, model, merged)
+    summary_md = generate_final_summary(client, model, merged, transcript=transcript)
     # Strip potential thinking blocks from summary too
     summary_md = re.sub(r"<think>[\s\S]*?</think>", "", summary_md).strip()
 
