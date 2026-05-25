@@ -18,6 +18,8 @@ services:
       - ./processed:/processed
       - ./failed:/failed
       - ./logs:/logs
+      # Obsidian Vault — путь задаётся в .env через OBSIDIAN_VAULT_PATH
+      - ${OBSIDIAN_VAULT_PATH:-./obsidian_vault}:/vault
       # Кэш моделей HuggingFace — сохраняется между перезапусками
       - hf_cache:/root/.cache/huggingface
     env_file: .env

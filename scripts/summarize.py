@@ -194,14 +194,51 @@ def chunk_to_text(chunk: list[SpeakerBlock]) -> str:
 
 _MAP_SYSTEM = """\
 Ты анализируешь фрагмент транскрипта рабочей планёрки.
-Твоя задача — извлечь структурированные факты. Не делай просто краткое резюме.
+Твоя задача — извлечь МАКСИМУМ структурированных фактов. Это НЕ краткое резюме.
+
+КРИТИЧЕСКИ ВАЖНО: на продуктовых планёрках люди часто идут по списку разделов/модулей системы и для каждого фиксируют статус, приоритет, проблему. Эти статусы — главное содержание встречи. Извлекай их в section_statuses, даже если люди не говорят формальное "статус такой-то".
+
+Также фиксируй НЕЯВНЫЕ блокеры, риски и открытые вопросы — если человек жалуется на проблему или сомневается, это блокер/риск/вопрос, даже без слова "блокер".
 
 Верни ТОЛЬКО строго валидный JSON без Markdown и без пояснений. Схема:
 
 {
   "chunk_id": <число>,
   "time_range": {"start": "HH:MM:SS", "end": "HH:MM:SS"},
-  "summary": "краткое резюме фрагмента",
+  "summary": "5-10 предложений: какие разделы/темы обсуждались по порядку, какие статусы и приоритеты зафиксированы, какая бизнес-логика проявилась. Не пиши абстрактно 'обсуждали дизайн' — пиши конкретно 'обсудили раздел X, статус Y, потому что Z'.",
+
+  "section_statuses": [
+    {
+      "section": "название раздела/модуля/функции (напр. 'Ценообразование', 'Панель сборщика', 'Клиентская часть')",
+      "status": "missing|exists|in_progress|needs_rework|postponed|removed|exists_partial",
+      "priority": "high|medium|low|none",
+      "reasoning": "почему такой статус/приоритет — деталями из обсуждения",
+      "notes": "что конкретно нужно сделать или что обсуждалось",
+      "source_time": "HH:MM:SS или null",
+      "evidence": "короткая цитата"
+    }
+  ],
+
+  "sequence": [
+    {
+      "order": <число, порядок>,
+      "what": "что делается/будет делаться",
+      "depends_on": "от чего зависит или null",
+      "timing": "когда (в разработке / следующее / после X / не приоритет / null)",
+      "source_time": "HH:MM:SS или null"
+    }
+  ],
+
+  "business_context": [
+    {
+      "topic": "тема (напр. 'Telegram-first', 'Доступные склады клиенту', 'Бесшовное переключение сборщик/курьер')",
+      "why_it_matters": "зачем это нужно бизнесу/пользователю",
+      "details": "конкретика, ограничения, варианты",
+      "source_time": "HH:MM:SS или null",
+      "evidence": "короткая цитата"
+    }
+  ],
+
   "decisions": [
     {
       "decision": "что решили",
@@ -214,10 +251,11 @@ _MAP_SYSTEM = """\
   ],
   "action_items": [
     {
-      "task": "что нужно сделать",
+      "task": "что нужно сделать — конкретно, не 'правки в дизайне', а 'добавить инвентаризацию в панель сборщика'",
       "owner": "имя или null",
       "deadline": "дата или null",
-      "context": "контекст поручения",
+      "context": "контекст поручения — почему и в связи с чем",
+      "section": "к какому разделу относится или null",
       "source_time": "HH:MM:SS или null",
       "evidence": "короткая цитата",
       "confidence": "high|medium|low"
@@ -225,25 +263,27 @@ _MAP_SYSTEM = """\
   ],
   "blockers": [
     {
-      "blocker": "описание",
-      "impact": "влияние",
+      "blocker": "описание (включая НЕЯВНЫЕ: 'раздел отсутствует', 'дизайна не было', 'функционал сделан слишком поверхностно')",
+      "impact": "влияние на работу",
       "owner": "имя или null",
+      "inferred": false,
       "source_time": "HH:MM:SS или null",
       "evidence": "короткая цитата"
     }
   ],
   "risks": [
     {
-      "risk": "описание",
+      "risk": "описание (включая НЕЯВНЫЕ: 'риск переплатить за переделки', 'риск перегрузить мобильный экран')",
       "severity": "high|medium|low",
       "context": "контекст",
+      "inferred": false,
       "source_time": "HH:MM:SS или null",
       "evidence": "короткая цитата"
     }
   ],
   "open_questions": [
     {
-      "question": "вопрос",
+      "question": "вопрос (если по теме нет финального решения или решение отложено — это открытый вопрос)",
       "owner": "имя или null",
       "context": "контекст",
       "source_time": "HH:MM:SS или null"
@@ -255,15 +295,15 @@ _MAP_SYSTEM = """\
 
 Правила:
 - Не выдумывай факты, которых нет в тексте.
-- Если owner неизвестен — owner = null.
-- Если deadline неизвестен — deadline = null.
-- Если уверенность низкая — confidence = "low".
-- Указывай source_time если таймкод есть в тексте.
-- Указывай evidence — короткую цитату из transcript.
-- Если это просто обсуждение без чёткого решения — не записывай как decision.
-- Если это не поручение — не записывай как action_item.
+- Если owner неизвестен — owner = null. Дедлайн неизвестен — deadline = null.
+- Указывай source_time и evidence если возможно.
+- decisions = только финальные решения. Обсуждение без решения → open_questions.
+- НО: section_statuses, blockers, risks записывай ЩЕДРО — это главная ценность.
+- Если раздел упомянут со статусом «есть/нет/в разработке/переделать/отложить/не приоритет» — обязательно в section_statuses.
+- Если в обсуждении проскочила бизнес-логика (как должно работать, для кого, в каком контексте) — обязательно в business_context.
+- В blockers/risks ставь `"inferred": true` если проблема явно не названа словом «блокер»/«риск», а выведена из контекста; иначе `false`.
 - Сохраняй имена спикеров как они есть в transcript.
-- В тексте могут встречаться токены вида PERSON_001, COMPANY_001, LOCATION_001, EMAIL_001, PHONE_001, DOMAIN_001, URL_001, TRANSACTION_001 — это анонимизированные реальные сущности (имена людей, компаний, городов, стран и т.д.). Обращайся с ними как с обычными именами собственными: включай в контекст, решения, поручения и цитаты точно как они есть. Никогда не убирай, не сокращай и не заменяй эти токены.\
+- В тексте могут встречаться токены вида PERSON_001, COMPANY_001, LOCATION_001, EMAIL_001, PHONE_001, DOMAIN_001, URL_001, TRANSACTION_001 — это анонимизированные реальные сущности. Обращайся с ними как с обычными именами собственными.\
 """
 
 
@@ -315,14 +355,17 @@ def extract_chunk(
 
 def merge_chunks(chunk_results: list[dict]) -> dict:
     merged: dict = {
-        "chunk_summaries": [],
-        "decisions":       [],
-        "action_items":    [],
-        "blockers":        [],
-        "risks":           [],
-        "open_questions":  [],
-        "important_facts": [],
-        "mentioned_topics": [],
+        "chunk_summaries":   [],
+        "section_statuses":  [],
+        "sequence":          [],
+        "business_context":  [],
+        "decisions":         [],
+        "action_items":      [],
+        "blockers":          [],
+        "risks":              [],
+        "open_questions":    [],
+        "important_facts":   [],
+        "mentioned_topics":  [],
     }
     for cr in chunk_results:
         if cr.get("summary"):
@@ -331,7 +374,8 @@ def merge_chunks(chunk_results: list[dict]) -> dict:
                 "time_range": cr.get("time_range", {}),
                 "summary":    cr["summary"],
             })
-        for key in ("decisions", "action_items", "blockers", "risks",
+        for key in ("section_statuses", "sequence", "business_context",
+                    "decisions", "action_items", "blockers", "risks",
                     "open_questions", "important_facts", "mentioned_topics"):
             items = cr.get(key, [])
             if isinstance(items, list):
@@ -364,7 +408,32 @@ def _dedup_by_key(items: list[dict], key: str, threshold: float = 0.6) -> list[d
     return result
 
 
+def _merge_section_statuses(items: list[dict]) -> list[dict]:
+    """Combine multiple status entries for the same section (last non-empty wins, notes accumulate)."""
+    bucket: dict[str, dict] = {}
+    for it in items:
+        key = _normalize(it.get("section", ""))
+        if not key:
+            continue
+        prev = bucket.get(key)
+        if prev is None:
+            bucket[key] = dict(it)
+            continue
+        # Merge: prefer non-empty status/priority; concatenate notes/reasoning
+        for fld in ("status", "priority", "source_time", "evidence"):
+            if not prev.get(fld) and it.get(fld):
+                prev[fld] = it[fld]
+        for fld in ("reasoning", "notes"):
+            old, new = prev.get(fld) or "", it.get(fld) or ""
+            if new and new not in old:
+                prev[fld] = (old + " | " + new).strip(" |") if old else new
+    return list(bucket.values())
+
+
 def deduplicate(merged: dict) -> dict:
+    merged["section_statuses"] = _merge_section_statuses(merged.get("section_statuses", []))
+    merged["business_context"] = _dedup_by_key(merged.get("business_context", []), "topic")
+    merged["sequence"]         = _dedup_by_key(merged.get("sequence", []),         "what")
     merged["action_items"]   = _dedup_by_key(merged["action_items"],   "task")
     merged["decisions"]      = _dedup_by_key(merged["decisions"],      "decision")
     merged["blockers"]       = _dedup_by_key(merged["blockers"],       "blocker")
@@ -398,55 +467,117 @@ def evidence_check(merged: dict) -> dict:
 
 _REDUCE_SYSTEM = """\
 Ты — аналитик рабочих встреч. Тебе передан структурированный анализ планёрки.
-Сформируй финальное Markdown-резюме строго по шаблону ниже.
+Сформируй итоговую заметку в формате **Obsidian-ready Markdown** строго по шаблону ниже.
 
-# Резюме планёрки
+ЖЁСТКИЕ ТРЕБОВАНИЯ К ВЫВОДУ:
+1. Возвращай ТОЛЬКО Markdown. Никакого текста до или после, никаких ```markdown ограждений вокруг всего ответа.
+2. НЕ используй HTML-теги вообще (никаких <br>, <div>, <details>, <summary>, &nbsp; и пр.).
+3. Action items пиши в формате **Obsidian Tasks**:
+   - [ ] Кратко суть задачи 👤 @Имя 📅 YYYY-MM-DD
+   Если ответственный неизвестен — опусти "👤 @...". Если дедлайн неизвестен — опусти "📅 ...".
+4. Ключевые сущности (продукты, технологии, проекты, команды, важные термины) оборачивай в wiki-links: [[Docker]], [[Whisper]], [[Obsidian]], [[Backend]], [[API]] и т.п. Названия разделов системы тоже оборачивай: [[Ценообразование]], [[Клиенты]], [[Панель сборщика]]. НЕ оборачивай людей.
+5. Обязательно добавь раздел "## Карта обсуждения" с Mermaid mindmap внутри ```mermaid``` блока.
+6. Сохраняй язык оригинала транскрипта (если транскрипт на русском — пиши по-русски).
+7. Не выдумывай факты — используй только переданные данные. Если поля нет — пиши "не указан".
+8. ОБЯЗАТЕЛЬНО используй данные из section_statuses, sequence, business_context. Это ключевая операционная информация — не сворачивай её в общее «обсудили дизайн».
+9. Action items должны быть КОНКРЕТНЫМИ — не «правки в панели сборщика», а «добавить инвентаризацию в [[Панель сборщика]]».
+
+ШАБЛОН (соблюдай порядок и точные заголовки):
+
+---
+type: meeting-summary
+---
 
 ## Кратко
-(2–5 предложений: о чём была встреча и главный итог)
+2–5 предложений: о чём была встреча и главный итог. Упомяни главные приоритеты и текущий этап работ.
 
-## Основные темы
-- ...
+## Карта обсуждения
+```mermaid
+mindmap
+  root((Планёрка))
+    Тема1
+      Подтема1
+      Подтема2
+    Тема2
+      Подтема1
+    Решения
+      Решение1
+    Риски
+      Риск1
+```
+(Заполни реальными темами/разделами из анализа. Минимум 3 ветки, максимум 8. Короткие 1-3-словные узлы. Без кавычек внутри узлов.)
+
+## Статус по разделам
+| Раздел | Статус | Приоритет | Почему | Что делать |
+|---|---|---|---|---|
+(Заполни из section_statuses. Статус словами: «есть», «нет», «в разработке», «требует переделки», «отложено», «убрано». Приоритет: «высокий», «средний», «низкий», «—». Колонка «Почему» — из reasoning. Колонка «Что делать» — из notes. Если разделов нет — таблицу всё равно оставь с шапкой.)
+
+## Последовательность работ
+Пронумерованный список из sequence (по полю `order`), отражающий порядок и зависимости. Формат:
+1. **Сейчас в работе:** … (что и от кого зависит)
+2. **Дальше:** …
+3. **Не приоритет / отложено:** …
+Если данных нет — напиши «Чёткая последовательность не зафиксирована».
+
+## Бизнес-контекст
+Маркированный список из business_context. Каждый пункт: **тема** — почему важно — детали.
+Если данных нет — раздел опусти.
+
+## Действия (Action Items)
+- [ ] Описание задачи 👤 @Имя 📅 2025-01-15
+- [ ] Другая задача 👤 @Имя
+(Все action_items сюда, конкретными формулировками. Группируй по разделам если их много.)
 
 ## Принятые решения
 | Решение | Контекст | Участники | Подтверждение |
 |---|---|---|---|
 
-## Поручения
-| Задача | Ответственный | Дедлайн | Контекст | Подтверждение |
-|---|---|---|---|---|
-
 ## Блокеры
-| Блокер | Влияние | Ответственный | Подтверждение |
-|---|---|---|---|
+| Блокер | Влияние | Ответственный | Источник | Подтверждение |
+|---|---|---|---|---|
+(В колонке «Источник» пиши «явный» если inferred=false, «выведено из контекста» если inferred=true.)
 
 ## Риски
-| Риск | Severity | Контекст | Подтверждение |
-|---|---|---|---|
+| Риск | Severity | Контекст | Источник | Подтверждение |
+|---|---|---|---|---|
 
 ## Открытые вопросы
 | Вопрос | Ответственный | Контекст | Подтверждение |
 |---|---|---|---|
 
-Правила:
-- Не выдумывай новые факты — используй только предоставленные данные.
+ПРАВИЛА:
 - Если ответственный неизвестен — пиши "не указан".
-- Если дедлайн неизвестен — пиши "не указан".
-- Сохраняй язык оригинала транскрипта.
-- Для каждого важного пункта добавляй evidence или source_time если они есть.\
+- Если дедлайн неизвестен — опусти 📅 (или пиши "не указан" в таблице).
+- Для каждого пункта в таблицах добавляй evidence/source_time если есть.
+- Если раздел пустой — оставь только заголовок и пустую таблицу с шапкой.\
 """
+
+
+def _strip_leading_frontmatter(md: str) -> str:
+    """Drop the first YAML frontmatter block if the document starts with it."""
+    s = md.lstrip("\ufeff")
+    if not s.startswith("---"):
+        return md
+    # Find closing '---' on its own line
+    m = re.search(r"^---\s*\n(.*?)\n---\s*\n", s, flags=re.DOTALL)
+    if not m:
+        return md
+    return s[m.end():]
 
 
 def generate_final_summary(client: "OpenAI", model: str, merged: dict) -> str:
     input_data = {
-        "chunk_summaries":  [cs["summary"] for cs in merged.get("chunk_summaries", [])],
-        "decisions":        merged.get("decisions", []),
-        "action_items":     merged.get("action_items", []),
-        "blockers":         merged.get("blockers", []),
-        "risks":            merged.get("risks", []),
-        "open_questions":   merged.get("open_questions", []),
-        "important_facts":  merged.get("important_facts", []),
-        "mentioned_topics": merged.get("mentioned_topics", []),
+        "chunk_summaries":   [cs["summary"] for cs in merged.get("chunk_summaries", [])],
+        "section_statuses":  merged.get("section_statuses", []),
+        "sequence":          merged.get("sequence", []),
+        "business_context":  merged.get("business_context", []),
+        "decisions":         merged.get("decisions", []),
+        "action_items":      merged.get("action_items", []),
+        "blockers":          merged.get("blockers", []),
+        "risks":              merged.get("risks", []),
+        "open_questions":    merged.get("open_questions", []),
+        "important_facts":   merged.get("important_facts", []),
+        "mentioned_topics":  merged.get("mentioned_topics", []),
     }
     return _chat(
         client, model, _REDUCE_SYSTEM,
@@ -657,7 +788,7 @@ def summarize(speakers_file: Path) -> None:
         f"# {title}\n\n"
     )
 
-    summary_md_full = frontmatter + summary_md
+    summary_md_full = frontmatter + _strip_leading_frontmatter(summary_md)
 
     summary_path = output_dir / f"{stem}_summary.md"
     summary_path.write_text(summary_md_full, encoding="utf-8")

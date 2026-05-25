@@ -827,6 +827,13 @@
         </label>
         <span class="toggle-label"><strong>LLM-анализ</strong> — сформировать резюме, поручения, решения</span>
       </div>
+      <div class="field" style="grid-column: 1 / -1; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+        <div style="font-size:13px; color: var(--muted);">
+          Модель: <strong id="current-model-badge">—</strong>
+          &nbsp;·&nbsp; Obsidian Vault: <strong id="current-vault-badge">—</strong>
+        </div>
+        <a href="/settings" style="font-size:13px; text-decoration:none; padding:6px 12px; border:1px solid var(--border); border-radius:6px;">⚙ Настройки →</a>
+      </div>
     </div>
   </div>
 
@@ -928,6 +935,8 @@ const badgeRemove  = document.getElementById('badge-remove');
 const catInput     = document.getElementById('cat-input');
 const langSelect   = document.getElementById('lang-select');
 const llmToggle    = document.getElementById('llm-toggle');
+const currentModelBadge = document.getElementById('current-model-badge');
+const currentVaultBadge = document.getElementById('current-vault-badge');
 const startBtn     = document.getElementById('start-btn');
 const progressCard = document.getElementById('progress-card');
 const spinner      = document.getElementById('spinner');
@@ -1572,6 +1581,27 @@ function setArchiveOpen(open) {
 }
 
 archiveBtn.addEventListener('click', () => setArchiveOpen(!archiveOpen));
+
+// ── Settings (LLM model + Obsidian subfolder) ─────────────────────────────────
+async function loadRuntimeSettings() {
+  try {
+    const r = await fetch('/api/settings');
+    if (!r.ok) return;
+    const d = await r.json();
+    const eff = d.effective || {};
+    if (currentModelBadge) currentModelBadge.textContent = eff.LLM_MODEL || '—';
+    if (currentVaultBadge) {
+      if (d.vault_mounted) {
+        currentVaultBadge.textContent = (eff.OBSIDIAN_SUBFOLDER || 'Meetings') + '/  ●';
+        currentVaultBadge.style.color = 'var(--accent, #10b981)';
+      } else {
+        currentVaultBadge.textContent = 'не подключён';
+        currentVaultBadge.style.color = 'var(--muted, #888)';
+      }
+    }
+  } catch {}
+}
+loadRuntimeSettings();
 
 // ── Auto-reconnect to active job on page load ────────────────────────────────
 (async () => {

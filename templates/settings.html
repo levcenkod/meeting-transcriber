@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Настройки — Meeting Transcriber</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script>
+    // Pre-paint theme so we don't flash white in dark mode
+    (function () {
+      try {
+        var t = localStorage.getItem('theme');
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    })();
+  </script>
+  <style>
+    :root, [data-theme="light"] {
+      --bg:#F5F6FB; --bg-elev:#FFFFFF; --bg-subtle:#F8FAFC; --bg-muted:#EEF2FF;
+      --border:#E4E7EC; --border-strong:#D1D5DB;
+      --text:#1F2328; --text-soft:#3F4654; --muted:#6B7280;
+      --accent:#6366F1; --accent-hover:#4F46E5; --accent-soft:#EEF2FF;
+      --accent-grad: linear-gradient(135deg, #6366F1 0%, #A855F7 60%, #EC4899 100%);
+      --success:#10B981; --error:#EF4444;
+      --shadow-sm:0 1px 2px rgba(0,0,0,0.05);
+      --shadow:0 4px 18px -2px rgba(0,0,0,0.08);
+    }
+    [data-theme="dark"] {
+      --bg:#0B0E17; --bg-elev:#131826; --bg-subtle:#1A1F2E; --bg-muted:#1E2438;
+      --border:#2A3142; --border-strong:#3A4256;
+      --text:#E5E7EB; --text-soft:#CBD5E1; --muted:#94A3B8;
+      --accent:#818CF8; --accent-hover:#A5B4FC; --accent-soft:#1E2547;
+      --accent-grad: linear-gradient(135deg, #818CF8 0%, #C084FC 60%, #F472B6 100%);
+      --success:#34D399; --error:#F87171;
+      --shadow-sm:0 1px 2px rgba(0,0,0,0.4);
+      --shadow:0 4px 18px -2px rgba(0,0,0,0.5);
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { color-scheme: light dark; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 32px 16px 64px;
+      line-height: 1.5;
+    }
+    .container { max-width: 760px; margin: 0 auto; }
+    .topbar { display:flex; align-items:center; justify-content:space-between; margin-bottom: 28px; }
+    .topbar a.back { color: var(--muted); text-decoration:none; font-size:14px; }
+    .topbar a.back:hover { color: var(--accent); }
+    h1 {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 32px; font-weight: 700;
+      background: var(--accent-grad);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+      margin-bottom: 6px;
+    }
+    .subtitle { color: var(--muted); font-size:14px; margin-bottom: 32px; }
+    .card {
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 20px;
+      box-shadow: var(--shadow-sm);
+    }
+    .card h2 {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 18px; font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .card .hint { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
+    label { display:block; font-size:13px; font-weight:500; margin-bottom:6px; color: var(--text-soft); }
+    input[type="text"], select {
+      width: 100%;
+      padding: 10px 12px;
+      font: inherit; font-size:14px;
+      background: var(--bg-subtle);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      outline: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    input[type="text"]:focus, select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    .row { display:flex; gap:10px; align-items:center; }
+    .row > * { flex: 1; }
+    button {
+      font: inherit; font-size:14px; font-weight: 500;
+      padding: 9px 16px;
+      background: var(--bg-subtle);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background .15s, border-color .15s;
+      flex: 0 0 auto;
+    }
+    button:hover { background: var(--bg-muted); border-color: var(--border-strong); }
+    button.primary {
+      background: var(--accent); color: white; border-color: var(--accent);
+    }
+    button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+    .pill {
+      display: inline-flex; align-items:center; gap:6px;
+      padding: 3px 10px; border-radius: 999px;
+      font-size: 12px; font-weight: 500;
+      background: var(--bg-muted); color: var(--text-soft);
+    }
+    .pill.ok    { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
+    .pill.warn  { background: color-mix(in srgb, var(--error) 15%, transparent); color: var(--error); }
+    .pill .dot { width:6px; height:6px; border-radius:50%; background: currentColor; }
+    .breadcrumb {
+      display:flex; flex-wrap:wrap; gap:4px; align-items:center;
+      font-size: 13px; color: var(--muted); margin: 4px 0 10px;
+    }
+    .breadcrumb a {
+      color: var(--accent); text-decoration: none; cursor: pointer;
+      padding: 2px 6px; border-radius: 4px;
+    }
+    .breadcrumb a:hover { background: var(--accent-soft); }
+    .breadcrumb .sep { color: var(--border-strong); }
+    .tree {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-subtle);
+      max-height: 280px;
+      overflow-y: auto;
+      padding: 6px;
+    }
+    .tree-item {
+      display:flex; align-items:center; gap:8px;
+      padding: 7px 10px;
+      font-size: 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      user-select: none;
+      transition: background .1s;
+    }
+    .tree-item:hover { background: var(--bg-muted); }
+    .tree-item .ico { color: var(--muted); flex: 0 0 16px; }
+    .tree-item .pick {
+      margin-left: auto;
+      font-size: 12px;
+      padding: 3px 10px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--bg-elev);
+      opacity: 0;
+      transition: opacity .1s;
+    }
+    .tree-item:hover .pick { opacity: 1; }
+    .tree-empty { padding: 16px; text-align:center; color: var(--muted); font-size:13px; }
+    .selected-path {
+      padding: 10px 12px;
+      background: var(--accent-soft);
+      border: 1px solid var(--border-accent, var(--accent));
+      border-radius: 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      margin-top: 10px;
+      word-break: break-all;
+    }
+    .save-bar {
+      position: sticky; bottom: 0;
+      background: var(--bg);
+      padding: 16px 0 0;
+      display:flex; justify-content:flex-end; gap:10px; align-items:center;
+      margin-top: 8px;
+    }
+    .save-status { font-size: 13px; color: var(--muted); margin-right: auto; min-height: 18px; }
+    .save-status.ok { color: var(--success); }
+    .save-status.err { color: var(--error); }
+    .small { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <div class="topbar">
+    <a href="/" class="back">← Назад к транскрипции</a>
+    <button id="theme-toggle" title="Переключить тему">🌓</button>
+  </div>
+
+  <h1>Настройки</h1>
+  <p class="subtitle">Параметры применяются ко всем следующим запускам — рестарт контейнера не нужен.</p>
+
+  <!-- LLM Model -->
+  <div class="card">
+    <h2>Модель LLM</h2>
+    <p class="hint">Список подгружается из <code id="llm-endpoint-hint">LLM_BASE_URL</code>. Если модель не появилась — введите имя вручную.</p>
+
+    <label for="model-select">Доступные модели</label>
+    <div class="row">
+      <select id="model-select">
+        <option value="">— загрузка…</option>
+      </select>
+      <button id="refresh-models" type="button" title="Обновить список">↻</button>
+    </div>
+
+    <div style="margin-top: 14px;">
+      <label for="model-manual">Ручной ввод (если модели нет в списке)</label>
+      <input type="text" id="model-manual" placeholder="напр. qwen3-32b">
+    </div>
+    <div class="small" id="model-current">Активная модель: —</div>
+  </div>
+
+  <!-- Obsidian Vault -->
+  <div class="card">
+    <h2>Obsidian Vault</h2>
+    <p class="hint">Путь к корню Vault задаётся в <code>.env</code> через <code>OBSIDIAN_VAULT_PATH</code> и монтируется в контейнер как <code>/vault</code>. Здесь выберите подпапку, куда складывать заметки.</p>
+
+    <div id="vault-status-pill" style="margin-bottom: 14px;">
+      <span class="pill"><span class="dot"></span><span id="vault-status-text">проверка…</span></span>
+    </div>
+
+    <label>Выбор подпапки</label>
+    <div class="breadcrumb" id="breadcrumb"></div>
+    <div class="tree" id="vault-tree">
+      <div class="tree-empty">Загрузка…</div>
+    </div>
+
+    <div class="row" style="margin-top: 10px;">
+      <input type="text" id="new-folder-name" placeholder="Имя новой подпапки">
+      <button id="create-folder" type="button">+ Создать</button>
+    </div>
+
+    <div id="selected-path-wrap" style="display:none;">
+      <label style="margin-top: 16px;">Выбранная подпапка</label>
+      <div class="selected-path" id="selected-path"></div>
+    </div>
+  </div>
+
+  <div class="save-bar">
+    <span class="save-status" id="save-status"></span>
+    <button id="save-btn" class="primary">Сохранить</button>
+  </div>
+
+</div>
+
+<script>
+const modelSelect      = document.getElementById('model-select');
+const modelManual      = document.getElementById('model-manual');
+const modelCurrent     = document.getElementById('model-current');
+const refreshModelsBtn = document.getElementById('refresh-models');
+const llmEndpointHint  = document.getElementById('llm-endpoint-hint');
+
+const vaultStatusText  = document.getElementById('vault-status-text');
+const vaultStatusPill  = document.getElementById('vault-status-pill').querySelector('.pill');
+const breadcrumbEl     = document.getElementById('breadcrumb');
+const treeEl           = document.getElementById('vault-tree');
+const newFolderInput   = document.getElementById('new-folder-name');
+const createFolderBtn  = document.getElementById('create-folder');
+const selectedPathWrap = document.getElementById('selected-path-wrap');
+const selectedPathEl   = document.getElementById('selected-path');
+
+const saveBtn    = document.getElementById('save-btn');
+const saveStatus = document.getElementById('save-status');
+
+let state = {
+  vaultMounted: false,
+  currentPath: '',    // breadcrumb position inside /vault
+  selectedSubfolder: 'Meetings',
+  llmModel: '',
+  availableModels: [],
+};
+
+// ── Theme toggle ─────────────────────────────────────────────────────────────
+document.getElementById('theme-toggle').addEventListener('click', () => {
+  const cur = document.documentElement.getAttribute('data-theme') || 'light';
+  const next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  try { localStorage.setItem('theme', next); } catch {}
+});
+
+// ── Initial load ─────────────────────────────────────────────────────────────
+async function init() {
+  try {
+    const r = await fetch('/api/settings');
+    const d = await r.json();
+    state.vaultMounted     = !!d.vault_mounted;
+    state.selectedSubfolder = d.effective?.OBSIDIAN_SUBFOLDER || 'Meetings';
+    state.llmModel          = d.effective?.LLM_MODEL || '';
+    if (d.llm_base_url) llmEndpointHint.textContent = d.llm_base_url;
+    modelCurrent.textContent = 'Активная модель: ' + (state.llmModel || '—');
+    modelManual.value = state.llmModel;
+    renderVaultStatus();
+    updateSelectedPath();
+    await loadModels();
+    if (state.vaultMounted) await loadDir('');
+    else renderTreeUnmounted();
+  } catch (e) {
+    saveStatus.textContent = 'Не удалось загрузить настройки';
+    saveStatus.className = 'save-status err';
+  }
+}
+
+// ── LLM models ───────────────────────────────────────────────────────────────
+async function loadModels() {
+  modelSelect.innerHTML = '<option value="">— загрузка…</option>';
+  try {
+    const r = await fetch('/api/llm-models');
+    const d = await r.json();
+    state.availableModels = d.models || [];
+    if (state.availableModels.length === 0) {
+      modelSelect.innerHTML = '<option value="">— список пуст —</option>';
+      if (d.error) {
+        modelCurrent.textContent = 'Ошибка соединения с LLM: ' + d.error;
+      }
+      return;
+    }
+    const opts = ['<option value="">— выберите —</option>']
+      .concat(state.availableModels.map(m => {
+        const sel = (m === state.llmModel) ? ' selected' : '';
+        return `<option value="${escapeAttr(m)}"${sel}>${escapeHtml(m)}</option>`;
+      }));
+    modelSelect.innerHTML = opts.join('');
+  } catch (e) {
+    modelSelect.innerHTML = '<option value="">— ошибка загрузки —</option>';
+  }
+}
+
+modelSelect.addEventListener('change', () => {
+  if (modelSelect.value) modelManual.value = modelSelect.value;
+});
+
+refreshModelsBtn.addEventListener('click', loadModels);
+
+// ── Vault tree ───────────────────────────────────────────────────────────────
+function renderVaultStatus() {
+  if (state.vaultMounted) {
+    vaultStatusPill.className = 'pill ok';
+    vaultStatusText.textContent = 'Vault подключён (/vault)';
+  } else {
+    vaultStatusPill.className = 'pill warn';
+    vaultStatusText.textContent = 'Vault не подключён — задайте OBSIDIAN_VAULT_PATH в .env и перезапустите контейнер';
+  }
+}
+
+function renderTreeUnmounted() {
+  treeEl.innerHTML = '<div class="tree-empty">Vault не смонтирован.<br>Установите <code>OBSIDIAN_VAULT_PATH</code> в <code>.env</code> и выполните <code>docker compose up -d</code>.</div>';
+  breadcrumbEl.innerHTML = '';
+}
+
+async function loadDir(path) {
+  state.currentPath = path;
+  try {
+    const r = await fetch('/api/vault-browse?path=' + encodeURIComponent(path));
+    const d = await r.json();
+    if (!d.mounted) { renderTreeUnmounted(); return; }
+    renderBreadcrumb(d.path || '');
+    renderTree(d.dirs || []);
+  } catch (e) {
+    treeEl.innerHTML = '<div class="tree-empty">Ошибка чтения: ' + escapeHtml(String(e)) + '</div>';
+  }
+}
+
+function renderBreadcrumb(path) {
+  const parts = path ? path.split('/') : [];
+  const html = ['<a data-path="">/vault</a>'];
+  let acc = '';
+  parts.forEach((p, i) => {
+    acc = acc ? acc + '/' + p : p;
+    html.push('<span class="sep">/</span>');
+    if (i === parts.length - 1) html.push('<span>' + escapeHtml(p) + '</span>');
+    else html.push('<a data-path="' + escapeAttr(acc) + '">' + escapeHtml(p) + '</a>');
+  });
+  breadcrumbEl.innerHTML = html.join('');
+  breadcrumbEl.querySelectorAll('a').forEach(a => {
+    a.addEventListener('click', () => loadDir(a.dataset.path));
+  });
+}
+
+function renderTree(dirs) {
+  if (dirs.length === 0) {
+    treeEl.innerHTML = '<div class="tree-empty">Пусто. Создайте подпапку ниже или выберите эту папку как корень для заметок.</div>';
+    appendPickCurrent();
+    return;
+  }
+  const html = dirs.map(name => `
+    <div class="tree-item" data-name="${escapeAttr(name)}">
+      <span class="ico">📁</span>
+      <span class="name">${escapeHtml(name)}</span>
+      <button class="pick" data-name="${escapeAttr(name)}">Выбрать</button>
+    </div>
+  `).join('');
+  treeEl.innerHTML = html;
+  treeEl.querySelectorAll('.tree-item').forEach(el => {
+    const name = el.dataset.name;
+    el.addEventListener('click', (ev) => {
+      if (ev.target.classList.contains('pick')) {
+        ev.stopPropagation();
+        pickSubfolder(joinPath(state.currentPath, name));
+      } else {
+        loadDir(joinPath(state.currentPath, name));
+      }
+    });
+  });
+  appendPickCurrent();
+}
+
+function appendPickCurrent() {
+  if (!state.currentPath) return;
+  const div = document.createElement('div');
+  div.className = 'tree-item';
+  div.style.borderTop = '1px dashed var(--border)';
+  div.style.marginTop = '4px';
+  div.innerHTML = `
+    <span class="ico">✓</span>
+    <span class="name" style="font-style:italic; color:var(--muted);">выбрать текущую папку как корень для заметок</span>
+    <button class="pick" style="opacity:1;">Выбрать «${escapeHtml(state.currentPath)}»</button>
+  `;
+  div.querySelector('button').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    pickSubfolder(state.currentPath);
+  });
+  treeEl.appendChild(div);
+}
+
+function pickSubfolder(path) {
+  state.selectedSubfolder = path || 'Meetings';
+  updateSelectedPath();
+}
+
+function updateSelectedPath() {
+  if (!state.selectedSubfolder) {
+    selectedPathWrap.style.display = 'none';
+    return;
+  }
+  selectedPathWrap.style.display = 'block';
+  selectedPathEl.textContent = '/vault/' + state.selectedSubfolder + '/';
+}
+
+// ── Create folder ────────────────────────────────────────────────────────────
+createFolderBtn.addEventListener('click', async () => {
+  const name = (newFolderInput.value || '').trim();
+  if (!name) return;
+  if (!state.vaultMounted) {
+    flash('Vault не смонтирован', true);
+    return;
+  }
+  try {
+    const r = await fetch('/api/vault-mkdir', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: state.currentPath, name }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      newFolderInput.value = '';
+      await loadDir(state.currentPath);
+      flash('Папка создана');
+    } else {
+      flash(d.error || 'Не удалось создать', true);
+    }
+  } catch (e) {
+    flash('Ошибка создания: ' + e, true);
+  }
+});
+
+// ── Save ─────────────────────────────────────────────────────────────────────
+saveBtn.addEventListener('click', async () => {
+  const model = (modelManual.value || modelSelect.value || '').trim();
+  const sub   = (state.selectedSubfolder || '').trim();
+  saveBtn.disabled = true;
+  saveStatus.textContent = 'Сохранение…';
+  saveStatus.className = 'save-status';
+  try {
+    const r = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ LLM_MODEL: model, OBSIDIAN_SUBFOLDER: sub }),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    state.llmModel = d.effective?.LLM_MODEL || model;
+    modelCurrent.textContent = 'Активная модель: ' + (state.llmModel || '—');
+    flash('Сохранено');
+  } catch (e) {
+    flash('Ошибка: ' + e.message, true);
+  } finally {
+    saveBtn.disabled = false;
+  }
+});
+
+function flash(msg, isErr) {
+  saveStatus.textContent = msg;
+  saveStatus.className = 'save-status ' + (isErr ? 'err' : 'ok');
+  setTimeout(() => {
+    if (saveStatus.textContent === msg) {
+      saveStatus.textContent = '';
+      saveStatus.className = 'save-status';
+    }
+  }, 3000);
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function joinPath(a, b) { return a ? a + '/' + b : b; }
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function escapeAttr(s) { return escapeHtml(s); }
+
+init();
+</script>
+</body>
+</html>

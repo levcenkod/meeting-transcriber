@@ -22,6 +22,125 @@ app = Flask(__name__, template_folder="/app/templates")
 INPUT_DIR  = Path("/input")
 OUTPUT_DIR = Path("/output")
 OBSIDIAN_DIR = OUTPUT_DIR / "_obsidian"
+VAULT_DIR    = Path("/vault")                 # host Obsidian Vault (mounted)
+SETTINGS_FILE = OUTPUT_DIR / "_settings.json"  # UI-editable runtime settings
+
+
+# ── Runtime settings (UI-editable, persist on disk) ──────────────────────────
+
+_SETTINGS_KEYS = ("LLM_MODEL", "OBSIDIAN_SUBFOLDER")
+
+
+def _load_settings() -> dict:
+    """Read settings overrides written by the UI. Missing file → empty dict."""
+    try:
+        if SETTINGS_FILE.exists():
+            data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            return {k: data[k] for k in _SETTINGS_KEYS if k in data and data[k]}
+    except Exception:
+        pass
+    return {}
+
+
+def _save_settings(data: dict) -> dict:
+    current = _load_settings()
+    for k in _SETTINGS_KEYS:
+        if k in data:
+            v = data.get(k)
+            if isinstance(v, str):
+                v = v.strip()
+            if v:
+                current[k] = v
+            else:
+                current.pop(k, None)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    SETTINGS_FILE.write_text(
+        json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return current
+
+
+def _effective_env() -> dict:
+    """Return os.environ merged with persisted UI settings (settings win)."""
+    env = {**os.environ}
+    for k, v in _load_settings().items():
+        env[k] = v
+    return env
+
+
+def _vault_subfolder() -> str:
+    """Resolve subfolder name inside /vault — env or settings override."""
+    s = _load_settings().get("OBSIDIAN_SUBFOLDER")
+    if s:
+        return s
+    return (os.environ.get("OBSIDIAN_SUBFOLDER") or "Meetings").strip()
+
+
+def _vault_available() -> bool:
+    """Check if the Obsidian Vault is actually mounted and writable."""
+    try:
+        return VAULT_DIR.is_dir()
+    except Exception:
+        return False
+
+
+_DASHBOARD_TEMPLATE = """\
+---
+title: "Meetings Dashboard"
+tags: [meetings, dashboard]
+---
+
+# 📊 Meetings Dashboard
+
+> Эта страница автоматически создана плагином Meeting Transcriber.
+> Используется плагином **Dataview** для агрегации заметок.
+
+## 🔥 Свежие планёрки
+
+```dataview
+TABLE WITHOUT ID
+  file.link AS "Планёрка",
+  date AS "Дата",
+  category AS "Категория",
+  length(attendees) AS "Участники"
+FROM "{folder}"
+WHERE type != "dashboard"
+SORT date DESC
+LIMIT 20
+```
+
+## ✅ Открытые задачи
+
+```dataview
+TASK FROM "{folder}"
+WHERE !completed
+SORT due ASC
+```
+
+## 🗂 По категориям
+
+```dataview
+TABLE length(rows) AS "Кол-во"
+FROM "{folder}"
+WHERE type != "dashboard"
+GROUP BY category
+SORT length(rows) DESC
+```
+"""
+
+
+def _ensure_dashboard(folder: Path, subfolder: str) -> None:
+    """Create Dashboard.md in the vault subfolder once (don't overwrite)."""
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        dash = folder / "Dashboard.md"
+        if not dash.exists():
+            dash.write_text(
+                _DASHBOARD_TEMPLATE.format(folder=subfolder),
+                encoding="utf-8",
+            )
+    except Exception:
+        pass
 
 _SUPPORTED_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".mp4", ".mkv", ".flac", ".aac", ".webm"}
 
@@ -91,6 +210,19 @@ def _create_obsidian_note(out_dir: Path, stem: str) -> Path | None:
     fname = f"{date} — {_slugify_filename(title)}.md" if date else f"{_slugify_filename(title)}.md"
     dest = folder / fname
     dest.write_text(content, encoding="utf-8")
+
+    # Also write to mounted Obsidian Vault if available
+    if _vault_available():
+        try:
+            sub = _vault_subfolder()
+            vault_root = VAULT_DIR / sub
+            _ensure_dashboard(vault_root, sub)
+            cat_folder = vault_root / _slugify_filename(category, 40)
+            cat_folder.mkdir(parents=True, exist_ok=True)
+            (cat_folder / fname).write_text(content, encoding="utf-8")
+        except Exception:
+            pass
+
     return dest
 
 
@@ -161,7 +293,7 @@ def _pipeline(job_id: str, audio_path: Path, category: str, language: str, llm_e
 
     try:
         # ── Build environment ────────────────────────────────────────────────
-        env = {**os.environ}
+        env = _effective_env()
         env["OUTPUT_SUBDIR"] = category
         env["LANGUAGE"]      = language
 
@@ -242,6 +374,112 @@ def _pipeline(job_id: str, audio_path: Path, category: str, language: str, llm_e
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/settings")
+def settings_page():
+    return render_template("settings.html")
+
+
+@app.route("/api/settings", methods=["GET", "POST"])
+def api_settings():
+    """Read/update UI-editable runtime settings (LLM_MODEL, OBSIDIAN_SUBFOLDER).
+
+    POST body: JSON {LLM_MODEL?: str, OBSIDIAN_SUBFOLDER?: str}
+    """
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        _save_settings(data)
+    persisted = _load_settings()
+    return jsonify({
+        "settings": persisted,
+        "effective": {
+            "LLM_MODEL":          persisted.get("LLM_MODEL")          or os.environ.get("LLM_MODEL", ""),
+            "OBSIDIAN_SUBFOLDER": persisted.get("OBSIDIAN_SUBFOLDER") or os.environ.get("OBSIDIAN_SUBFOLDER", "Meetings"),
+        },
+        "llm_base_url":       os.environ.get("LLM_BASE_URL", ""),
+        "vault_mounted":      _vault_available(),
+        "vault_subfolder":    _vault_subfolder(),
+    })
+
+
+@app.route("/api/llm-models")
+def api_llm_models():
+    """Proxy to {LLM_BASE_URL}/models — returns list of available model ids."""
+    import urllib.request
+    import urllib.error
+
+    base = (_effective_env().get("LLM_BASE_URL") or "").rstrip("/")
+    api_key = _effective_env().get("LLM_API_KEY") or "not-required"
+    if not base:
+        return jsonify({"models": [], "error": "LLM_BASE_URL not set"}), 200
+
+    # Rewrite localhost → host.docker.internal for in-container calls
+    url = base
+    for host in ("localhost", "127.0.0.1"):
+        if f"://{host}" in url:
+            url = url.replace(f"://{host}", "://host.docker.internal")
+            break
+    url = url + "/models"
+
+    try:
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        items = data.get("data", []) if isinstance(data, dict) else []
+        models = sorted({m.get("id") for m in items if m.get("id")})
+        return jsonify({"models": models})
+    except Exception as exc:
+        return jsonify({"models": [], "error": str(exc)}), 200
+
+
+@app.route("/api/vault-browse")
+def api_vault_browse():
+    """List directories inside the mounted /vault for the folder picker.
+
+    Query: ?path=relative/subdir   (relative to /vault, never escapes it)
+    """
+    if not _vault_available():
+        return jsonify({"mounted": False, "path": "", "dirs": []})
+
+    rel = (request.args.get("path") or "").strip().strip("/").replace("\\", "/")
+    try:
+        target = (VAULT_DIR / rel).resolve()
+        # Confine inside /vault
+        VAULT_DIR_RESOLVED = VAULT_DIR.resolve()
+        if target != VAULT_DIR_RESOLVED and VAULT_DIR_RESOLVED not in target.parents:
+            target = VAULT_DIR_RESOLVED
+            rel = ""
+        if not target.is_dir():
+            return jsonify({"mounted": True, "path": rel, "dirs": [], "error": "not a directory"})
+        dirs = sorted(
+            [p.name for p in target.iterdir() if p.is_dir() and not p.name.startswith(".")],
+            key=str.lower,
+        )
+        return jsonify({"mounted": True, "path": rel, "dirs": dirs})
+    except Exception as exc:
+        return jsonify({"mounted": True, "path": rel, "dirs": [], "error": str(exc)}), 200
+
+
+@app.route("/api/vault-mkdir", methods=["POST"])
+def api_vault_mkdir():
+    """Create a new subfolder inside /vault. Body: {path: 'rel/path', name: 'NewFolder'}"""
+    if not _vault_available():
+        return jsonify({"ok": False, "error": "vault not mounted"}), 400
+    data = request.get_json(silent=True) or {}
+    rel  = (data.get("path") or "").strip().strip("/").replace("\\", "/")
+    name = (data.get("name") or "").strip()
+    if not name or "/" in name or "\\" in name or name in (".", ".."):
+        return jsonify({"ok": False, "error": "invalid name"}), 400
+    try:
+        parent = (VAULT_DIR / rel).resolve()
+        VAULT_DIR_RESOLVED = VAULT_DIR.resolve()
+        if parent != VAULT_DIR_RESOLVED and VAULT_DIR_RESOLVED not in parent.parents:
+            return jsonify({"ok": False, "error": "outside vault"}), 400
+        (parent / name).mkdir(parents=True, exist_ok=True)
+        return jsonify({"ok": True})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 200
 
 
 @app.route("/upload", methods=["POST"])
