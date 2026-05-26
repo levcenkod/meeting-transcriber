@@ -91,9 +91,28 @@ def _chat(client: "OpenAI", model: str, system: str, user: str) -> str:
     return resp.choices[0].message.content.strip()
 
 
+_LOG_THINKING = os.environ.get("LLM_LOG_THINKING", "0").lower() in ("1", "true", "yes", "on")
+_THINK_RE = re.compile(r"<think>([\s\S]*?)</think>", re.IGNORECASE)
+
+
+def _log_thinking(raw: str) -> None:
+    """If LLM_LOG_THINKING is on, print <think>…</think> blocks to stderr."""
+    if not _LOG_THINKING:
+        return
+    for i, m in enumerate(_THINK_RE.finditer(raw), 1):
+        thought = m.group(1).strip()
+        if not thought:
+            continue
+        print(f"[THINK #{i}] ──────────────────────────────", file=sys.stderr, flush=True)
+        for line in thought.splitlines():
+            print(f"[THINK] {line}", file=sys.stderr, flush=True)
+        print(f"[THINK #{i}] ── end ───────────────────────", file=sys.stderr, flush=True)
+
+
 def _clean_llm_response(raw: str) -> str:
     """Strip <think>…</think> blocks (Qwen3 thinking mode) and markdown fences."""
-    raw = re.sub(r"<think>[\s\S]*?</think>", "", raw).strip()
+    _log_thinking(raw)
+    raw = _THINK_RE.sub("", raw).strip()
     if "```" in raw:
         m = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", raw)
         if m:
