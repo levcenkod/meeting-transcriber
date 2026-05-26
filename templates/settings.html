@@ -178,6 +178,27 @@
     .save-status.ok { color: var(--success); }
     .save-status.err { color: var(--error); }
     .small { font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+    /* ── LLM profile picker ── */
+    .profiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .profile {
+      display: flex; flex-direction: column; gap: 4px;
+      padding: 12px 14px;
+      background: var(--bg-subtle);
+      border: 1.5px solid var(--border);
+      border-radius: 10px;
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+    }
+    .profile:hover { border-color: var(--accent); }
+    .profile.active { border-color: var(--accent); background: var(--accent-soft); }
+    .profile .p-title { font-weight: 600; font-size: 14px; color: var(--text); }
+    .profile .p-url   { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); word-break: break-all; }
+    .profile input[type="radio"] { display: none; }
+    .custom-fields { display: none; margin-top: 12px; padding: 12px; background: var(--bg-subtle); border: 1px dashed var(--border); border-radius: 8px; }
+    .custom-fields.show { display: block; }
+    .custom-fields label { margin-top: 8px; }
+    .custom-fields label:first-child { margin-top: 0; }
   </style>
 </head>
 <body>
@@ -194,9 +215,19 @@
   <!-- LLM Model -->
   <div class="card">
     <h2>Модель LLM</h2>
-    <p class="hint">Список подгружается из <code id="llm-endpoint-hint">LLM_BASE_URL</code>. Если модель не появилась — введите имя вручную.</p>
+    <p class="hint">Выберите провайдера и модель. Для локальных моделей запустите LM Studio или Ollama на хост-машине — контейнер автоматически достучится через <code>host.docker.internal</code>.</p>
 
-    <label for="model-select">Доступные модели</label>
+    <label>Профиль</label>
+    <div class="profiles" id="profiles"></div>
+
+    <div class="custom-fields" id="custom-fields">
+      <label for="custom-url">Base URL (OpenAI-совместимый, должен заканчиваться на <code>/v1</code>)</label>
+      <input type="text" id="custom-url" placeholder="http://localhost:8000/v1">
+      <label for="custom-key">API key (опционально)</label>
+      <input type="text" id="custom-key" placeholder="sk-... или not-required">
+    </div>
+
+    <label for="model-select" style="margin-top:14px;">Доступные модели <span id="profile-endpoint-hint" style="color:var(--muted); font-weight:400; font-size:12px;"></span></label>
     <div class="row">
       <select id="model-select">
         <option value="">— загрузка…</option>
@@ -206,7 +237,7 @@
 
     <div style="margin-top: 14px;">
       <label for="model-manual">Ручной ввод (если модели нет в списке)</label>
-      <input type="text" id="model-manual" placeholder="напр. qwen3-32b">
+      <input type="text" id="model-manual" placeholder="напр. qwen3:32b">
     </div>
     <div class="small" id="model-current">Активная модель: —</div>
   </div>
@@ -249,7 +280,11 @@ const modelSelect      = document.getElementById('model-select');
 const modelManual      = document.getElementById('model-manual');
 const modelCurrent     = document.getElementById('model-current');
 const refreshModelsBtn = document.getElementById('refresh-models');
-const llmEndpointHint  = document.getElementById('llm-endpoint-hint');
+const profilesEl       = document.getElementById('profiles');
+const customFieldsEl   = document.getElementById('custom-fields');
+const customUrlInput   = document.getElementById('custom-url');
+const customKeyInput   = document.getElementById('custom-key');
+const profileEndpointHint = document.getElementById('profile-endpoint-hint');
 
 const vaultStatusText  = document.getElementById('vault-status-text');
 const vaultStatusPill  = document.getElementById('vault-status-pill').querySelector('.pill');
@@ -265,10 +300,15 @@ const saveStatus = document.getElementById('save-status');
 
 let state = {
   vaultMounted: false,
-  currentPath: '',    // breadcrumb position inside /vault
+  currentPath: '',
   selectedSubfolder: 'Meetings',
   llmModel: '',
   availableModels: [],
+  activeProfile: 'openai',
+  profiles: {},
+  profileModels: {},   // {profile_id: chosen_model}
+  customUrl: '',
+  customKey: '',
 };
 
 // ── Theme toggle ─────────────────────────────────────────────────────────────
@@ -284,12 +324,19 @@ async function init() {
   try {
     const r = await fetch('/api/settings');
     const d = await r.json();
-    state.vaultMounted     = !!d.vault_mounted;
+    state.vaultMounted      = !!d.vault_mounted;
     state.selectedSubfolder = d.effective?.OBSIDIAN_SUBFOLDER || 'Meetings';
     state.llmModel          = d.effective?.LLM_MODEL || '';
-    if (d.llm_base_url) llmEndpointHint.textContent = d.llm_base_url;
-    modelCurrent.textContent = 'Активная модель: ' + (state.llmModel || '—');
-    modelManual.value = state.llmModel;
+    state.activeProfile     = d.active_profile || 'openai';
+    state.profiles          = d.profiles || {};
+    state.profileModels     = (d.settings?.LLM_PROFILE_MODELS) || {};
+    state.customUrl         = d.settings?.LLM_CUSTOM_BASE_URL || '';
+    state.customKey         = d.settings?.LLM_CUSTOM_API_KEY || '';
+    customUrlInput.value    = state.customUrl;
+    customKeyInput.value    = state.customKey;
+    modelCurrent.textContent = 'Активная модель: ' + (state.llmModel || '—') + ' · ' + (state.profiles[state.activeProfile]?.label || '');
+    modelManual.value = state.profileModels[state.activeProfile] || state.llmModel;
+    renderProfiles();
     renderVaultStatus();
     updateSelectedPath();
     await loadModels();
@@ -300,6 +347,42 @@ async function init() {
     saveStatus.className = 'save-status err';
   }
 }
+
+// ── Profile picker ───────────────────────────────────────────────────────────
+function renderProfiles() {
+  const ids = Object.keys(state.profiles);
+  profilesEl.innerHTML = ids.map(pid => {
+    const p = state.profiles[pid];
+    const active = pid === state.activeProfile ? ' active' : '';
+    const url = p.editable_url ? (state.customUrl || '— задайте URL ниже —') : (p.base_url || '');
+    return `
+      <label class="profile${active}" data-pid="${escapeAttr(pid)}">
+        <input type="radio" name="llm-profile" value="${escapeAttr(pid)}"${active ? ' checked' : ''}>
+        <span class="p-title">${escapeHtml(p.label)}</span>
+        <span class="p-url">${escapeHtml(url)}</span>
+      </label>`;
+  }).join('');
+  profilesEl.querySelectorAll('.profile').forEach(el => {
+    el.addEventListener('click', () => selectProfile(el.dataset.pid));
+  });
+  customFieldsEl.classList.toggle('show', state.activeProfile === 'custom');
+  const activeUrl = state.activeProfile === 'custom' ? state.customUrl : state.profiles[state.activeProfile]?.base_url;
+  profileEndpointHint.textContent = activeUrl ? '· ' + activeUrl : '';
+}
+
+function selectProfile(pid) {
+  if (!state.profiles[pid] || pid === state.activeProfile) return;
+  if (modelManual.value.trim()) {
+    state.profileModels[state.activeProfile] = modelManual.value.trim();
+  }
+  state.activeProfile = pid;
+  modelManual.value = state.profileModels[pid] || state.profiles[pid].default_model || '';
+  renderProfiles();
+  loadModels();
+}
+
+customUrlInput.addEventListener('input', () => { state.customUrl = customUrlInput.value.trim(); renderProfiles(); });
+customKeyInput.addEventListener('input', () => { state.customKey = customKeyInput.value.trim(); });
 
 // ── LLM models ───────────────────────────────────────────────────────────────
 async function loadModels() {
@@ -468,19 +551,31 @@ createFolderBtn.addEventListener('click', async () => {
 saveBtn.addEventListener('click', async () => {
   const model = (modelManual.value || modelSelect.value || '').trim();
   const sub   = (state.selectedSubfolder || '').trim();
+  if (model) state.profileModels[state.activeProfile] = model;
   saveBtn.disabled = true;
   saveStatus.textContent = 'Сохранение…';
   saveStatus.className = 'save-status';
   try {
+    const payload = {
+      LLM_PROFILE:         state.activeProfile,
+      LLM_PROFILE_MODELS:  state.profileModels,
+      LLM_MODEL:           model,
+      OBSIDIAN_SUBFOLDER:  sub,
+    };
+    if (state.activeProfile === 'custom') {
+      payload.LLM_CUSTOM_BASE_URL = state.customUrl;
+      payload.LLM_CUSTOM_API_KEY  = state.customKey;
+    }
     const r = await fetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ LLM_MODEL: model, OBSIDIAN_SUBFOLDER: sub }),
+      body: JSON.stringify(payload),
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     state.llmModel = d.effective?.LLM_MODEL || model;
-    modelCurrent.textContent = 'Активная модель: ' + (state.llmModel || '—');
+    state.profiles = d.profiles || state.profiles;
+    modelCurrent.textContent = 'Активная модель: ' + (state.llmModel || '—') + ' · ' + (state.profiles[state.activeProfile]?.label || '');
     flash('Сохранено');
   } catch (e) {
     flash('Ошибка: ' + e.message, true);

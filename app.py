@@ -29,7 +29,25 @@ CATEGORIES_FILE = OUTPUT_DIR / "_categories.json"  # user-defined cat/subcat tre
 
 # ── Runtime settings (UI-editable, persist on disk) ──────────────────────────
 
-_SETTINGS_KEYS = ("LLM_MODEL", "OBSIDIAN_SUBFOLDER")
+# LLM provider presets. Each profile = (label, base_url, default_model, needs_user_api_key).
+# `base_url` can be None for "custom" — the user enters their own URL.
+LLM_PROFILES: dict[str, dict] = {
+    "openai":   {"label": "OpenAI (online)",       "base_url": "https://api.openai.com/v1",   "default_model": "gpt-4o-mini", "needs_key": True},
+    "lmstudio": {"label": "LM Studio (локально)", "base_url": "http://localhost:1234/v1",    "default_model": "qwen3-32b",   "needs_key": False},
+    "ollama":   {"label": "Ollama (локально)",    "base_url": "http://localhost:11434/v1",   "default_model": "qwen3:8b",    "needs_key": False},
+    "custom":   {"label": "Свой endpoint",         "base_url": None,                            "default_model": "",            "needs_key": True},
+}
+DEFAULT_LLM_PROFILE = "openai"
+
+# Known settings keys. Values may be str or (for LLM_PROFILE_MODELS) dict.
+_SETTINGS_KEYS = (
+    "LLM_PROFILE",            # active profile id (key of LLM_PROFILES)
+    "LLM_PROFILE_MODELS",     # {profile_id: model_name}
+    "LLM_CUSTOM_BASE_URL",    # only used when profile == "custom"
+    "LLM_CUSTOM_API_KEY",     # only used when profile == "custom"
+    "LLM_MODEL",              # legacy single-model setting (kept for compat)
+    "OBSIDIAN_SUBFOLDER",
+)
 
 
 def _load_settings() -> dict:
@@ -37,7 +55,18 @@ def _load_settings() -> dict:
     try:
         if SETTINGS_FILE.exists():
             data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-            return {k: data[k] for k in _SETTINGS_KEYS if k in data and data[k]}
+            out: dict = {}
+            for k in _SETTINGS_KEYS:
+                if k not in data:
+                    continue
+                v = data[k]
+                if k == "LLM_PROFILE_MODELS":
+                    if isinstance(v, dict):
+                        out[k] = {pk: str(pv) for pk, pv in v.items()
+                                  if isinstance(pk, str) and pv}
+                elif v not in (None, ""):
+                    out[k] = v
+            return out
     except Exception:
         pass
     return {}
@@ -46,14 +75,23 @@ def _load_settings() -> dict:
 def _save_settings(data: dict) -> dict:
     current = _load_settings()
     for k in _SETTINGS_KEYS:
-        if k in data:
-            v = data.get(k)
-            if isinstance(v, str):
-                v = v.strip()
-            if v:
-                current[k] = v
-            else:
-                current.pop(k, None)
+        if k not in data:
+            continue
+        v = data[k]
+        if k == "LLM_PROFILE_MODELS":
+            if isinstance(v, dict):
+                existing = current.get(k, {}) if isinstance(current.get(k), dict) else {}
+                for pk, pv in v.items():
+                    if isinstance(pk, str) and isinstance(pv, str) and pv.strip():
+                        existing[pk] = pv.strip()
+                current[k] = existing
+            continue
+        if isinstance(v, str):
+            v = v.strip()
+        if v:
+            current[k] = v
+        else:
+            current.pop(k, None)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(
         json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -61,11 +99,53 @@ def _save_settings(data: dict) -> dict:
     return current
 
 
+def _active_llm_profile(settings: dict | None = None) -> str:
+    s = settings if settings is not None else _load_settings()
+    pid = s.get("LLM_PROFILE") or os.environ.get("LLM_PROFILE") or DEFAULT_LLM_PROFILE
+    return pid if pid in LLM_PROFILES else DEFAULT_LLM_PROFILE
+
+
+def _resolve_llm_for_profile(profile_id: str, settings: dict) -> dict:
+    """Compute effective {base_url, api_key, model} for a given profile."""
+    prof = LLM_PROFILES.get(profile_id, LLM_PROFILES[DEFAULT_LLM_PROFILE])
+    profile_models = settings.get("LLM_PROFILE_MODELS") or {}
+    # Model: per-profile stored → legacy LLM_MODEL (only for active profile) → default
+    model = profile_models.get(profile_id) or ""
+    if not model and profile_id == _active_llm_profile(settings):
+        model = settings.get("LLM_MODEL") or os.environ.get("LLM_MODEL") or ""
+    if not model:
+        model = prof["default_model"]
+
+    if profile_id == "custom":
+        base_url = (settings.get("LLM_CUSTOM_BASE_URL")
+                    or os.environ.get("LLM_BASE_URL") or "")
+        api_key  = (settings.get("LLM_CUSTOM_API_KEY")
+                    or os.environ.get("LLM_API_KEY") or "not-required")
+    else:
+        base_url = prof["base_url"] or ""
+        if prof["needs_key"]:
+            api_key = os.environ.get("LLM_API_KEY") or ""
+        else:
+            api_key = "not-required"
+    return {"base_url": base_url, "api_key": api_key, "model": model}
+
+
 def _effective_env() -> dict:
-    """Return os.environ merged with persisted UI settings (settings win)."""
+    """Return os.environ merged with persisted UI settings, applying active LLM profile."""
     env = {**os.environ}
-    for k, v in _load_settings().items():
-        env[k] = v
+    settings = _load_settings()
+    profile_id = _active_llm_profile(settings)
+    resolved = _resolve_llm_for_profile(profile_id, settings)
+    if resolved["base_url"]:
+        env["LLM_BASE_URL"] = resolved["base_url"]
+    if resolved["api_key"]:
+        env["LLM_API_KEY"]  = resolved["api_key"]
+    if resolved["model"]:
+        env["LLM_MODEL"]    = resolved["model"]
+    env["LLM_PROFILE"] = profile_id
+    sub = settings.get("OBSIDIAN_SUBFOLDER")
+    if sub:
+        env["OBSIDIAN_SUBFOLDER"] = sub
     return env
 
 
@@ -467,23 +547,37 @@ def settings_page():
 
 @app.route("/api/settings", methods=["GET", "POST"])
 def api_settings():
-    """Read/update UI-editable runtime settings (LLM_MODEL, OBSIDIAN_SUBFOLDER).
-
-    POST body: JSON {LLM_MODEL?: str, OBSIDIAN_SUBFOLDER?: str}
-    """
+    """Read/update UI-editable runtime settings (LLM profile/model, Obsidian subfolder)."""
     if request.method == "POST":
         data = request.get_json(silent=True) or {}
         _save_settings(data)
     persisted = _load_settings()
+    active = _active_llm_profile(persisted)
+    resolved_per_profile = {
+        pid: _resolve_llm_for_profile(pid, persisted) for pid in LLM_PROFILES
+    }
     return jsonify({
         "settings": persisted,
+        "active_profile": active,
+        "profiles": {
+            pid: {
+                "label":         prof["label"],
+                "base_url":      resolved_per_profile[pid]["base_url"],
+                "default_model": prof["default_model"],
+                "needs_key":     prof["needs_key"],
+                "model":         resolved_per_profile[pid]["model"],
+                "editable_url":  pid == "custom",
+            } for pid, prof in LLM_PROFILES.items()
+        },
         "effective": {
-            "LLM_MODEL":          persisted.get("LLM_MODEL")          or os.environ.get("LLM_MODEL", ""),
+            "LLM_PROFILE":        active,
+            "LLM_BASE_URL":       resolved_per_profile[active]["base_url"],
+            "LLM_MODEL":          resolved_per_profile[active]["model"],
             "OBSIDIAN_SUBFOLDER": persisted.get("OBSIDIAN_SUBFOLDER") or os.environ.get("OBSIDIAN_SUBFOLDER", "Meetings"),
         },
-        "llm_base_url":       os.environ.get("LLM_BASE_URL", ""),
-        "vault_mounted":      _vault_available(),
-        "vault_subfolder":    _vault_subfolder(),
+        "llm_base_url":    resolved_per_profile[active]["base_url"],
+        "vault_mounted":   _vault_available(),
+        "vault_subfolder": _vault_subfolder(),
     })
 
 

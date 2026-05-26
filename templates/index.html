@@ -1705,7 +1705,9 @@ async function loadRuntimeSettings() {
     if (!r.ok) return;
     const d = await r.json();
     const eff = d.effective || {};
-    if (currentModelBadge) currentModelBadge.textContent = eff.LLM_MODEL || '—';
+    const profLabel = d.profiles?.[eff.LLM_PROFILE]?.label || '';
+    const modelText = (eff.LLM_MODEL || '—') + (profLabel ? ` · ${profLabel}` : '');
+    if (currentModelBadge) currentModelBadge.textContent = modelText;
     if (currentVaultBadge) {
       if (d.vault_mounted) {
         currentVaultBadge.textContent = (eff.OBSIDIAN_SUBFOLDER || 'Meetings') + '/  ●';
