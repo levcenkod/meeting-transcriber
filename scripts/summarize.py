@@ -80,7 +80,7 @@ def _get_llm_client() -> tuple["OpenAI", str]:
 
 
 def _chat(client: "OpenAI", model: str, system: str, user: str) -> str:
-    resp = client.chat.completions.create(
+    kwargs: dict = dict(
         model=model,
         messages=[
             {"role": "system", "content": system},
@@ -88,11 +88,43 @@ def _chat(client: "OpenAI", model: str, system: str, user: str) -> str:
         ],
         temperature=0.1,
     )
-    return resp.choices[0].message.content.strip()
+    # Ollama native "think" flag (прокидывается через openai-compat extra_body).
+    # Безопасно для других провайдеров — неизвестные поля игнорируются.
+    if _LOG_THINKING:
+        kwargs["extra_body"] = {"think": True}
+
+    resp = client.chat.completions.create(**kwargs)
+    msg = resp.choices[0].message
+    content = (msg.content or "").strip()
+    reasoning = (getattr(msg, "reasoning_content", None)
+                 or getattr(msg, "reasoning", None)
+                 or getattr(msg, "thinking", None)
+                 or "") or ""
+    if _LOG_THINKING:
+        if reasoning:
+            _emit_thinking(reasoning, source="reasoning_content")
+        elif "<think>" in content.lower():
+            pass  # будет извлечено в _clean_llm_response → _log_thinking
+        else:
+            # Ничего похожего на размышления — печатаем диагностику один раз на чанк.
+            print("[THINK] (пусто: модель не вернула ни <think>…</think>, "
+                  "ни reasoning_content). Проверь, что в Ollama включён thinking "
+                  "для qwen3 и в промпте нет /no_think.", file=sys.stderr, flush=True)
+    return content
 
 
 _LOG_THINKING = os.environ.get("LLM_LOG_THINKING", "0").lower() in ("1", "true", "yes", "on")
 _THINK_RE = re.compile(r"<think>([\s\S]*?)</think>", re.IGNORECASE)
+
+
+def _emit_thinking(text: str, source: str = "think-tag") -> None:
+    text = (text or "").strip()
+    if not text:
+        return
+    print(f"[THINK ▶ {source}] ──────────────────────────────", file=sys.stderr, flush=True)
+    for line in text.splitlines():
+        print(f"[THINK] {line}", file=sys.stderr, flush=True)
+    print(f"[THINK ◀ {source}] ── end ───────────────────────", file=sys.stderr, flush=True)
 
 
 def _log_thinking(raw: str) -> None:
@@ -100,13 +132,7 @@ def _log_thinking(raw: str) -> None:
     if not _LOG_THINKING:
         return
     for i, m in enumerate(_THINK_RE.finditer(raw), 1):
-        thought = m.group(1).strip()
-        if not thought:
-            continue
-        print(f"[THINK #{i}] ──────────────────────────────", file=sys.stderr, flush=True)
-        for line in thought.splitlines():
-            print(f"[THINK] {line}", file=sys.stderr, flush=True)
-        print(f"[THINK #{i}] ── end ───────────────────────", file=sys.stderr, flush=True)
+        _emit_thinking(m.group(1), source=f"think-tag #{i}")
 
 
 def _clean_llm_response(raw: str) -> str:
