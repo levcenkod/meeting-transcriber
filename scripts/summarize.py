@@ -92,6 +92,8 @@ def _chat(client: "OpenAI", model: str, system: str, user: str) -> str:
     # Безопасно для других провайдеров — неизвестные поля игнорируются.
     if _LOG_THINKING:
         kwargs["extra_body"] = {"think": True}
+        kwargs["stream"] = True
+        return _chat_streaming(client, kwargs)
 
     resp = client.chat.completions.create(**kwargs)
     msg = resp.choices[0].message
@@ -106,11 +108,79 @@ def _chat(client: "OpenAI", model: str, system: str, user: str) -> str:
         elif "<think>" in content.lower():
             pass  # будет извлечено в _clean_llm_response → _log_thinking
         else:
-            # Ничего похожего на размышления — печатаем диагностику один раз на чанк.
             print("[THINK] (пусто: модель не вернула ни <think>…</think>, "
                   "ни reasoning_content). Проверь, что в Ollama включён thinking "
                   "для qwen3 и в промпте нет /no_think.", file=sys.stderr, flush=True)
     return content
+
+
+def _chat_streaming(client: "OpenAI", kwargs: dict) -> str:
+    """Stream thinking tokens to stderr live; collect final content for return."""
+    print("[THINK ▶ stream] ──────────────────────────────", file=sys.stderr, flush=True)
+    content_parts: list[str] = []
+    think_buf = ""           # буфер по строкам — печатаем целыми строками
+    in_think_tag = False     # для случая, если размышления приходят в <think> внутри content
+    saw_any_thinking = False
+
+    try:
+        stream = client.chat.completions.create(**kwargs)
+        for event in stream:
+            try:
+                delta = event.choices[0].delta
+            except (IndexError, AttributeError):
+                continue
+
+            # 1) Отдельное поле reasoning_content / reasoning / thinking в delta
+            r = (getattr(delta, "reasoning_content", None)
+                 or getattr(delta, "reasoning", None)
+                 or getattr(delta, "thinking", None))
+            if r:
+                saw_any_thinking = True
+                think_buf += r
+                while "\n" in think_buf:
+                    line, think_buf = think_buf.split("\n", 1)
+                    print(f"[THINK] {line}", file=sys.stderr, flush=True)
+
+            # 2) Обычный content (может содержать <think>…</think> у некоторых рантаймов)
+            c = getattr(delta, "content", None)
+            if c:
+                if "<think>" in c.lower() or in_think_tag:
+                    saw_any_thinking = True
+                    # очень упрощённый стейт-машина для тегов
+                    chunk = c
+                    while chunk:
+                        if not in_think_tag:
+                            i = chunk.lower().find("<think>")
+                            if i < 0:
+                                content_parts.append(chunk)
+                                break
+                            content_parts.append(chunk[:i])
+                            chunk = chunk[i + len("<think>"):]
+                            in_think_tag = True
+                        else:
+                            j = chunk.lower().find("</think>")
+                            if j < 0:
+                                think_buf += chunk
+                                chunk = ""
+                            else:
+                                think_buf += chunk[:j]
+                                chunk = chunk[j + len("</think>"):]
+                                in_think_tag = False
+                            while "\n" in think_buf:
+                                line, think_buf = think_buf.split("\n", 1)
+                                print(f"[THINK] {line}", file=sys.stderr, flush=True)
+                else:
+                    content_parts.append(c)
+    finally:
+        if think_buf.strip():
+            print(f"[THINK] {think_buf.rstrip()}", file=sys.stderr, flush=True)
+        if not saw_any_thinking:
+            print("[THINK] (пусто: thinking-токены не пришли в стриме)",
+                  file=sys.stderr, flush=True)
+        print("[THINK ◀ stream] ── end ───────────────────────",
+              file=sys.stderr, flush=True)
+
+    return "".join(content_parts).strip()
 
 
 _LOG_THINKING = os.environ.get("LLM_LOG_THINKING", "0").lower() in ("1", "true", "yes", "on")
