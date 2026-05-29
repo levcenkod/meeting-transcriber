@@ -48,6 +48,15 @@ except ImportError:
 CHUNK_SIZE_CHARS    = int(os.environ.get("CHUNK_SIZE_CHARS",    "12000"))
 CHUNK_OVERLAP_CHARS = int(os.environ.get("CHUNK_OVERLAP_CHARS", "2000"))
 
+# Summary output verbosity. Influences both REDUCE prompt template and what we
+# feed to the model (less input + shorter output = faster generation locally).
+#   full     — все разделы (как раньше)
+#   compact  — TL;DR, коуч, решения (top), действия (фильтр), вопросы, риски+блокеры
+#   minimal  — только TL;DR + коуч + действия
+SUMMARY_MODE = os.environ.get("SUMMARY_MODE", "compact").strip().lower()
+if SUMMARY_MODE not in ("full", "compact", "minimal"):
+    SUMMARY_MODE = "compact"
+
 # ─── Data structures ──────────────────────────────────────────────────────────
 
 @dataclass
@@ -76,7 +85,18 @@ def _get_llm_client() -> tuple["OpenAI", str]:
         base_url = re.sub(r"localhost|127\.0\.0\.1", "host.docker.internal", base_url)
         print(f"[INFO] Docker detected: LLM_BASE_URL → {base_url}")
 
-    return OpenAI(base_url=base_url, api_key=api_key), model
+    # Локальные модели на CPU/малом GPU могут думать > 10 мин на чанк.
+    # Поэтому даём большой таймаут и НЕ ретраим (иначе будет 3×timeout).
+    timeout_s = float(os.environ.get("LLM_TIMEOUT_SECONDS", "3600"))  # 1 час
+    max_retries = int(os.environ.get("LLM_MAX_RETRIES", "0"))
+    print(f"[INFO] LLM client: timeout={timeout_s:.0f}s, max_retries={max_retries}")
+
+    return OpenAI(
+        base_url=base_url,
+        api_key=api_key,
+        timeout=timeout_s,
+        max_retries=max_retries,
+    ), model
 
 
 def _chat(client: "OpenAI", model: str, system: str, user: str) -> str:
@@ -767,6 +787,232 @@ mindmap
 """
 
 
+# ─── REDUCE: COMPACT mode ─────────────────────────────────────────────────────
+
+_REDUCE_SYSTEM_COMPACT = """\
+Ты — аналитик рабочих встреч. Тебе передан структурированный анализ.
+Сформируй КОРОТКУЮ итоговую заметку в формате **Obsidian-ready Markdown** строго по шаблону ниже.
+
+ЦЕЛЬ: минимум воды, максимум смысла. Читатель должен за 1–2 минуты понять главное.
+
+ЖЁСТКИЕ ТРЕБОВАНИЯ:
+1. Возвращай ТОЛЬКО Markdown. Без HTML-тегов, без ``` вокруг всего ответа.
+2. Action items: обычный маркированный список:
+   - **Суть задачи** — ответственный: Имя, срок: YYYY-MM-DD.
+   Если ответственного нет — «не назначен», срока нет — «не назначен». Никаких чекбоксов.
+3. Ключевые сущности (продукты, технологии, проекты, разделы) оборачивай в [[wiki-links]]. Людей НЕ оборачивай.
+4. Сохраняй язык транскрипта.
+5. Не выдумывай факты. Используй только переданные данные.
+6. Раздел «Взгляд бизнес-коуча» — это ТВОЙ синтез. Не цитируй сырые поля, синтезируй.
+
+ШАБЛОН (соблюдай порядок и заголовки):
+
+---
+type: meeting-summary
+meeting_type: <meta.meeting_type_key или "other">
+---
+
+> [!info] Метаданные
+> **Тип:** <meta.meeting_type_label>
+> **Длительность:** <meta.time_start–meta.time_end или «не указана»>
+> **Участники:** <meta.participants через запятую или «не указаны»>
+
+## TL;DR
+3–5 предложений нарративом: о чём встреча, главный итог, ключевые приоритеты, текущий этап. Это самостоятельная выжимка — кто прочитал только её, должен понять суть.
+
+## Взгляд бизнес-коуча
+> [!tip] Аналитика и рекомендации
+> Синтез поверх данных. Без воды.
+
+**Главные приоритеты (top-3):**
+1. <приоритет 1 — почему именно он, что заблокирует если не сделать>
+2. <приоритет 2>
+3. <приоритет 3>
+
+**Предлагаемая стратегия:**
+2–4 предложения: порядок действий, что распараллелить, что отложить. Опирайся на section_statuses (статус «нет» с высоким приоритетом — первый ход) и sequence (зависимости).
+
+**Слепые зоны и недооценённые риски:**
+- <риск/блокер, который команда явно НЕ обсудила или преуменьшила — выводи из inferred=true в risks/blockers и из пробелов в meta_observations>
+- <…> (2–4 пункта)
+
+**Главные процессные проблемы встречи:**
+- <из meta_observations — только самые важные, 2–3 пункта. Если meta.orphan_pct ≥ 50 — обязательно: «Из <total> задач <orphaned> без владельца/срока — активность ≠ решения».>
+
+**Как провести следующую встречу продуктивнее:**
+- <конкретный совет 1>
+- <конкретный совет 2>
+- <конкретный совет 3>
+
+## Ключевые решения
+Максимум 5–7 самых значимых решений. Формат:
+
+**1. <decision>**
+> *«<quote>» (<source_time>)*
+- Контекст: <context кратко>
+- Участники: <speakers или «не указаны»>
+
+Если решений нет — «Финальных решений не зафиксировано».
+
+## Действия
+Только задачи с владельцем ИЛИ сроком ИЛИ привязкой к разделу. Если таких нет — выведи топ-5 самых конкретных. Группируй по разделу, если задач >5:
+
+### <Раздел>
+- **<Задача>** — ответственный: …, срок: …
+
+Если осталось много «сирот» (без владельца, срока и раздела) — добавь в конце одним абзацем: «Кроме того, без владельцев и сроков зафиксированы: <через запятую краткие формулировки>».
+
+Если задач нет — «Конкретных action items не зафиксировано».
+
+## Открытые вопросы
+Топ-5 нерешённых вопросов. Каждый — один пункт:
+- **<question>** — <context в одном предложении>. <если есть позиции — «Позиции: Имя — …; Имя — …»>
+
+Если вопросов нет — раздел опусти.
+
+## Риски и блокеры
+Объединённая таблица. Максимум 7 строк. Сортируй: блокеры с явным impact → high-риски → medium-риски.
+
+| Тип | Описание | Severity / Impact | Источник |
+|---|---|---|---|
+(Тип = «блокер» или «риск». Источник = «явный» если inferred=false, «контекст» если inferred=true.)
+
+Если ни рисков ни блокеров — раздел опусти.
+
+## Оговорка по источнику
+(Включай только если meta.anonymizer_artifacts_present = true.)
+Транскрипт прошёл анонимизацию: имена, компании и контакты заменены тегами PERSON_NNN, COMPANY_NNN и т.п. Имена в этой заметке восстановлены через обратное сопоставление; если встретился тег — значит сопоставление не сработало для конкретной сущности.
+
+ПРАВИЛА:
+- Без раздела «Карта обсуждения», «Статус по разделам», «Последовательность работ», «Бизнес-контекст», «Контекст», «Наблюдения о встрече» — их содержание уходит во «Взгляд бизнес-коуча».
+- Без HTML, без эмодзи, без чекбоксов.\
+"""
+
+
+# ─── REDUCE: MINIMAL mode ─────────────────────────────────────────────────────
+
+_REDUCE_SYSTEM_MINIMAL = """\
+Ты — аналитик встреч. Сделай ОЧЕНЬ короткую заметку в Markdown.
+
+Возвращай ТОЛЬКО Markdown, без HTML, без ``` вокруг ответа. Сохраняй язык транскрипта.
+Ключевые сущности (продукты, технологии, разделы) — в [[wiki-links]]. Людей не оборачивай.
+
+ШАБЛОН:
+
+---
+type: meeting-summary
+meeting_type: <meta.meeting_type_key или "other">
+---
+
+> [!info] Метаданные
+> **Тип:** <meta.meeting_type_label>
+> **Длительность:** <meta.time_start–meta.time_end или «не указана»>
+> **Участники:** <meta.participants или «не указаны»>
+
+## TL;DR
+3–5 предложений: о чём встреча, итог, приоритеты.
+
+## Главное от коуча
+**Топ-3 приоритета:**
+1. <…>
+2. <…>
+3. <…>
+
+**Главные риски/блокеры (≤3):**
+- <…>
+
+**Как улучшить следующую встречу:**
+- <…> (2–3 пункта)
+
+## Действия
+Только с владельцем или сроком. Формат:
+- **<Задача>** — ответственный: Имя, срок: YYYY-MM-DD.
+
+Если задач нет — «Конкретных action items не зафиксировано».\
+"""
+
+
+def _trim_for_compact(merged: dict) -> dict:
+    """Trim merged analysis to keep REDUCE prompt small (compact/minimal modes)."""
+    PRI = {"high": 0, "medium": 1, "low": 2, "none": 3, None: 3}
+    SEV = {"high": 0, "medium": 1, "low": 2, None: 3}
+
+    # Decisions: prefer those with quote + source_time + high confidence
+    decisions = sorted(
+        merged.get("decisions", []),
+        key=lambda d: (
+            0 if d.get("quote") else 1,
+            0 if d.get("source_time") else 1,
+            {"high": 0, "medium": 1, "low": 2}.get(d.get("confidence"), 3),
+        ),
+    )[:7]
+
+    # Risks/blockers: prefer explicit (inferred=false) + high severity
+    risks = sorted(
+        merged.get("risks", []),
+        key=lambda r: (
+            0 if not r.get("inferred") else 1,
+            SEV.get(r.get("severity"), 3),
+        ),
+    )[:7]
+    blockers = sorted(
+        merged.get("blockers", []),
+        key=lambda b: (0 if not b.get("inferred") else 1,),
+    )[:5]
+
+    # Open questions: keep top 5
+    questions = merged.get("open_questions", [])[:5]
+
+    # Meta observations: top 3 by severity
+    observations = sorted(
+        merged.get("meta_observations", []),
+        key=lambda o: SEV.get(o.get("severity"), 3),
+    )[:3]
+
+    # Section statuses: keep only high/medium priority (для контекста коучу)
+    statuses = [s for s in merged.get("section_statuses", [])
+                if (s.get("priority") in ("high", "medium"))]
+    statuses = sorted(statuses, key=lambda s: PRI.get(s.get("priority"), 3))[:10]
+
+    # Sequence: keep up to 8 (для коуча, чтобы понять зависимости)
+    sequence = merged.get("sequence", [])[:8]
+
+    out = dict(merged)
+    out["decisions"]         = decisions
+    out["risks"]             = risks
+    out["blockers"]          = blockers
+    out["open_questions"]    = questions
+    out["meta_observations"] = observations
+    out["section_statuses"]  = statuses
+    out["sequence"]          = sequence
+    # business_context и important_facts в компакт-режиме не нужны
+    out["business_context"]  = []
+    out["important_facts"]   = []
+    return out
+
+
+def _trim_for_minimal(merged: dict) -> dict:
+    """Minimal mode: оставляем только то, что нужно для TL;DR + коуч + действия."""
+    trimmed = _trim_for_compact(merged)
+    # Действия — только с owner или deadline
+    def _is_concrete(a: dict) -> bool:
+        o = a.get("owner"); d = a.get("deadline")
+        has_o = bool(o) and str(o).strip().lower() not in ("null", "none", "")
+        has_d = bool(d) and str(d).strip().lower() not in ("null", "none", "")
+        return has_o or has_d
+    actions = [a for a in trimmed.get("action_items", []) if _is_concrete(a)]
+    if not actions:
+        actions = trimmed.get("action_items", [])[:5]
+    trimmed["action_items"]  = actions
+    trimmed["decisions"]     = trimmed["decisions"][:3]
+    trimmed["open_questions"] = []
+    trimmed["risks"]         = trimmed["risks"][:3]
+    trimmed["blockers"]      = trimmed["blockers"][:2]
+    trimmed["section_statuses"] = []
+    trimmed["sequence"]      = []
+    return trimmed
+
+
 def _strip_leading_frontmatter(md: str) -> str:
     """Drop the first YAML frontmatter block if the document starts with it."""
     s = md.lstrip("\ufeff")
@@ -862,23 +1108,37 @@ def _compute_meta_stats(merged: dict, transcript: str | None = None) -> dict:
 def generate_final_summary(client: "OpenAI", model: str, merged: dict,
                            transcript: str | None = None) -> str:
     meta = _compute_meta_stats(merged, transcript=transcript)
+
+    # Pick template + trim input depending on SUMMARY_MODE
+    if SUMMARY_MODE == "minimal":
+        system_prompt = _REDUCE_SYSTEM_MINIMAL
+        data_src = _trim_for_minimal(merged)
+    elif SUMMARY_MODE == "compact":
+        system_prompt = _REDUCE_SYSTEM_COMPACT
+        data_src = _trim_for_compact(merged)
+    else:  # full
+        system_prompt = _REDUCE_SYSTEM
+        data_src = merged
+
+    print(f"[INFO] Summary mode: {SUMMARY_MODE}")
+
     input_data = {
         "meta":              meta,
-        "chunk_summaries":   [cs["summary"] for cs in merged.get("chunk_summaries", [])],
-        "section_statuses":  merged.get("section_statuses", []),
-        "sequence":          merged.get("sequence", []),
-        "business_context":  merged.get("business_context", []),
-        "decisions":         merged.get("decisions", []),
-        "action_items":      merged.get("action_items", []),
-        "blockers":          merged.get("blockers", []),
-        "risks":              merged.get("risks", []),
-        "open_questions":    merged.get("open_questions", []),
-        "meta_observations": merged.get("meta_observations", []),
-        "important_facts":   merged.get("important_facts", []),
-        "mentioned_topics":  merged.get("mentioned_topics", []),
+        "chunk_summaries":   [cs["summary"] for cs in data_src.get("chunk_summaries", [])],
+        "section_statuses":  data_src.get("section_statuses", []),
+        "sequence":          data_src.get("sequence", []),
+        "business_context":  data_src.get("business_context", []),
+        "decisions":         data_src.get("decisions", []),
+        "action_items":      data_src.get("action_items", []),
+        "blockers":          data_src.get("blockers", []),
+        "risks":              data_src.get("risks", []),
+        "open_questions":    data_src.get("open_questions", []),
+        "meta_observations": data_src.get("meta_observations", []),
+        "important_facts":   data_src.get("important_facts", []),
+        "mentioned_topics":  data_src.get("mentioned_topics", []),
     }
     return _chat(
-        client, model, _REDUCE_SYSTEM,
+        client, model, system_prompt,
         f"Данные анализа встречи:\n\n{json.dumps(input_data, ensure_ascii=False, indent=2)}",
     )
 
