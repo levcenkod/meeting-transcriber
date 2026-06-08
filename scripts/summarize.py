@@ -1211,9 +1211,15 @@ def summarize(speakers_file: Path) -> None:
     print(f"[INFO] Speaker blocks: {len(blocks)}")
 
     # Build chunks with overlap
-    chunks = build_chunks_with_overlap(blocks, CHUNK_SIZE_CHARS, CHUNK_OVERLAP_CHARS)
-    print(f"[INFO] Chunks: {len(chunks)} "
-          f"(size≤{CHUNK_SIZE_CHARS} chars, overlap≈{CHUNK_OVERLAP_CHARS} chars)")
+    total_chars = sum(b.char_len() for b in blocks)
+    if total_chars <= CHUNK_SIZE_CHARS * 2:
+        # Всё влезает в один проход — не делим, экономим один LLM-вызов.
+        chunks = [blocks]
+        print(f"[INFO] Chunks: 1 (single-chunk shortcut, {total_chars} chars ≤ {CHUNK_SIZE_CHARS * 2} threshold)")
+    else:
+        chunks = build_chunks_with_overlap(blocks, CHUNK_SIZE_CHARS, CHUNK_OVERLAP_CHARS)
+        print(f"[INFO] Chunks: {len(chunks)} "
+              f"(size≤{CHUNK_SIZE_CHARS} chars, overlap≈{CHUNK_OVERLAP_CHARS} chars)")
 
     # LLM client
     client, model = _get_llm_client()
