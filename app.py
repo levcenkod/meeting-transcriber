@@ -32,22 +32,32 @@ CATEGORIES_FILE = OUTPUT_DIR / "_categories.json"  # user-defined cat/subcat tre
 # LLM provider presets. Each profile = (label, base_url, default_model, needs_user_api_key).
 # `base_url` can be None for "custom" — the user enters their own URL.
 LLM_PROFILES: dict[str, dict] = {
-    "openai":   {"label": "OpenAI (online)",       "base_url": "https://api.openai.com/v1",   "default_model": "gpt-4o-mini", "needs_key": True},
-    "lmstudio": {"label": "LM Studio (локально)", "base_url": "http://localhost:1234/v1",    "default_model": "qwen3-32b",   "needs_key": False},
-    "ollama":   {"label": "Ollama (локально)",    "base_url": "http://localhost:11434/v1",   "default_model": "qwen3:8b",    "needs_key": False},
-    "custom":   {"label": "Свой endpoint",         "base_url": None,                            "default_model": "",            "needs_key": True},
+    "openai":   {"label": "OpenAI (online)",       "base_url": "https://api.openai.com/v1",   "default_model": "gpt-4o-mini",   "needs_key": True},
+    "deepseek": {"label": "DeepSeek (online)",      "base_url": "https://api.deepseek.com/v1", "default_model": "deepseek-chat", "needs_key": True},
+    "lmstudio": {"label": "LM Studio (локально)", "base_url": "http://localhost:1234/v1",    "default_model": "qwen3-32b",     "needs_key": False},
+    "ollama":   {"label": "Ollama (локально)",    "base_url": "http://localhost:11434/v1",   "default_model": "qwen3:8b",      "needs_key": False},
+    "custom":   {"label": "Свой endpoint",         "base_url": None,                            "default_model": "",              "needs_key": True},
 }
 DEFAULT_LLM_PROFILE = "openai"
 
-# Known settings keys. Values may be str or (for LLM_PROFILE_MODELS) dict.
+# Allowed summary verbosity modes (must match scripts/summarize.py).
+SUMMARY_MODES = ("full", "compact", "minimal")
+DEFAULT_SUMMARY_MODE = "compact"
+
+# Known settings keys. Values may be str or (for *_MODELS / *_KEYS) dict.
 _SETTINGS_KEYS = (
     "LLM_PROFILE",            # active profile id (key of LLM_PROFILES)
     "LLM_PROFILE_MODELS",     # {profile_id: model_name}
+    "LLM_PROFILE_KEYS",       # {profile_id: api_key} for online profiles
     "LLM_CUSTOM_BASE_URL",    # only used when profile == "custom"
     "LLM_CUSTOM_API_KEY",     # only used when profile == "custom"
     "LLM_MODEL",              # legacy single-model setting (kept for compat)
+    "SUMMARY_MODE",           # full | compact | minimal
     "OBSIDIAN_SUBFOLDER",
 )
+
+# Settings keys whose value is a {profile_id: str} dict.
+_DICT_SETTINGS_KEYS = ("LLM_PROFILE_MODELS", "LLM_PROFILE_KEYS")
 
 
 def _load_settings() -> dict:
@@ -60,7 +70,7 @@ def _load_settings() -> dict:
                 if k not in data:
                     continue
                 v = data[k]
-                if k == "LLM_PROFILE_MODELS":
+                if k in _DICT_SETTINGS_KEYS:
                     if isinstance(v, dict):
                         out[k] = {pk: str(pv) for pk, pv in v.items()
                                   if isinstance(pk, str) and pv}
@@ -78,7 +88,7 @@ def _save_settings(data: dict) -> dict:
         if k not in data:
             continue
         v = data[k]
-        if k == "LLM_PROFILE_MODELS":
+        if k in _DICT_SETTINGS_KEYS:
             if isinstance(v, dict):
                 existing = current.get(k, {}) if isinstance(current.get(k), dict) else {}
                 for pk, pv in v.items():
@@ -105,10 +115,29 @@ def _active_llm_profile(settings: dict | None = None) -> str:
     return pid if pid in LLM_PROFILES else DEFAULT_LLM_PROFILE
 
 
+def _active_summary_mode(settings: dict | None = None) -> str:
+    s = settings if settings is not None else _load_settings()
+    mode = (s.get("SUMMARY_MODE") or os.environ.get("SUMMARY_MODE")
+            or DEFAULT_SUMMARY_MODE).strip().lower()
+    return mode if mode in SUMMARY_MODES else DEFAULT_SUMMARY_MODE
+
+
+def _profile_has_key(profile_id: str, settings: dict) -> bool:
+    """Whether an API key is available for a profile (stored or via env)."""
+    if profile_id == "custom":
+        return bool(settings.get("LLM_CUSTOM_API_KEY") or os.environ.get("LLM_API_KEY"))
+    prof = LLM_PROFILES.get(profile_id)
+    if not prof or not prof["needs_key"]:
+        return True  # no key required
+    keys = settings.get("LLM_PROFILE_KEYS") or {}
+    return bool(keys.get(profile_id) or os.environ.get("LLM_API_KEY"))
+
+
 def _resolve_llm_for_profile(profile_id: str, settings: dict) -> dict:
     """Compute effective {base_url, api_key, model} for a given profile."""
     prof = LLM_PROFILES.get(profile_id, LLM_PROFILES[DEFAULT_LLM_PROFILE])
     profile_models = settings.get("LLM_PROFILE_MODELS") or {}
+    profile_keys   = settings.get("LLM_PROFILE_KEYS") or {}
     # Model: per-profile stored → legacy LLM_MODEL (only for active profile) → default
     model = profile_models.get(profile_id) or ""
     if not model and profile_id == _active_llm_profile(settings):
@@ -124,7 +153,8 @@ def _resolve_llm_for_profile(profile_id: str, settings: dict) -> dict:
     else:
         base_url = prof["base_url"] or ""
         if prof["needs_key"]:
-            api_key = os.environ.get("LLM_API_KEY") or ""
+            api_key = (profile_keys.get(profile_id)
+                       or os.environ.get("LLM_API_KEY") or "")
         else:
             api_key = "not-required"
     return {"base_url": base_url, "api_key": api_key, "model": model}
@@ -142,7 +172,8 @@ def _effective_env() -> dict:
         env["LLM_API_KEY"]  = resolved["api_key"]
     if resolved["model"]:
         env["LLM_MODEL"]    = resolved["model"]
-    env["LLM_PROFILE"] = profile_id
+    env["LLM_PROFILE"]  = profile_id
+    env["SUMMARY_MODE"] = _active_summary_mode(settings)
     sub = settings.get("OBSIDIAN_SUBFOLDER")
     if sub:
         env["OBSIDIAN_SUBFOLDER"] = sub
@@ -556,15 +587,21 @@ def api_settings():
     resolved_per_profile = {
         pid: _resolve_llm_for_profile(pid, persisted) for pid in LLM_PROFILES
     }
+    # Redact secrets from the settings echo — never send raw API keys to the UI.
+    safe_settings = {k: v for k, v in persisted.items()
+                     if k not in ("LLM_PROFILE_KEYS", "LLM_CUSTOM_API_KEY")}
     return jsonify({
-        "settings": persisted,
+        "settings": safe_settings,
         "active_profile": active,
+        "summary_mode": _active_summary_mode(persisted),
+        "summary_modes": list(SUMMARY_MODES),
         "profiles": {
             pid: {
                 "label":         prof["label"],
                 "base_url":      resolved_per_profile[pid]["base_url"],
                 "default_model": prof["default_model"],
                 "needs_key":     prof["needs_key"],
+                "has_key":       _profile_has_key(pid, persisted),
                 "model":         resolved_per_profile[pid]["model"],
                 "editable_url":  pid == "custom",
             } for pid, prof in LLM_PROFILES.items()
@@ -573,6 +610,7 @@ def api_settings():
             "LLM_PROFILE":        active,
             "LLM_BASE_URL":       resolved_per_profile[active]["base_url"],
             "LLM_MODEL":          resolved_per_profile[active]["model"],
+            "SUMMARY_MODE":       _active_summary_mode(persisted),
             "OBSIDIAN_SUBFOLDER": persisted.get("OBSIDIAN_SUBFOLDER") or os.environ.get("OBSIDIAN_SUBFOLDER", "Meetings"),
         },
         "llm_base_url":    resolved_per_profile[active]["base_url"],
@@ -583,12 +621,34 @@ def api_settings():
 
 @app.route("/api/llm-models")
 def api_llm_models():
-    """Proxy to {LLM_BASE_URL}/models — returns list of available model ids."""
+    """Proxy to {LLM_BASE_URL}/models — returns list of available model ids.
+
+    Optional query params let the UI probe a profile that isn't saved yet:
+      ?profile=<id>       — resolve base_url/key for that profile
+      ?base_url=<url>     — override base url (for custom, unsaved)
+      ?api_key=<key>      — override api key (for unsaved key entry)
+    """
     import urllib.request
     import urllib.error
 
-    base = (_effective_env().get("LLM_BASE_URL") or "").rstrip("/")
-    api_key = _effective_env().get("LLM_API_KEY") or "not-required"
+    settings = _load_settings()
+    profile_id = request.args.get("profile")
+    if profile_id and profile_id in LLM_PROFILES:
+        resolved = _resolve_llm_for_profile(profile_id, settings)
+        base = (resolved["base_url"] or "").rstrip("/")
+        api_key = resolved["api_key"] or "not-required"
+    else:
+        base = (_effective_env().get("LLM_BASE_URL") or "").rstrip("/")
+        api_key = _effective_env().get("LLM_API_KEY") or "not-required"
+
+    # Allow explicit overrides (unsaved custom URL / freshly typed key).
+    override_url = (request.args.get("base_url") or "").strip()
+    if override_url:
+        base = override_url.rstrip("/")
+    override_key = (request.args.get("api_key") or "").strip()
+    if override_key:
+        api_key = override_key
+
     if not base:
         return jsonify({"models": [], "error": "LLM_BASE_URL not set"}), 200
 

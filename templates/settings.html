@@ -199,6 +199,23 @@
     .custom-fields.show { display: block; }
     .custom-fields label { margin-top: 8px; }
     .custom-fields label:first-child { margin-top: 0; }
+    .key-field { display: none; margin-top: 12px; }
+    .key-field.show { display: block; }
+    input[type="password"] {
+      width: 100%;
+      padding: 10px 12px;
+      font: inherit; font-size:14px;
+      background: var(--bg-subtle);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      outline: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    input[type="password"]:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
   </style>
 </head>
 <body>
@@ -223,8 +240,12 @@
     <div class="custom-fields" id="custom-fields">
       <label for="custom-url">Base URL (OpenAI-совместимый, должен заканчиваться на <code>/v1</code>)</label>
       <input type="text" id="custom-url" placeholder="http://localhost:8000/v1">
-      <label for="custom-key">API key (опционально)</label>
-      <input type="text" id="custom-key" placeholder="sk-... или not-required">
+    </div>
+
+    <div class="key-field" id="key-field">
+      <label for="api-key">API ключ <span id="key-state" style="color:var(--muted); font-weight:400; font-size:12px;"></span></label>
+      <input type="password" id="api-key" placeholder="sk-...">
+      <div class="small" id="key-hint">Ключ хранится локально в <code>output/_settings.json</code> и не показывается обратно.</div>
     </div>
 
     <label for="model-select" style="margin-top:14px;">Доступные модели <span id="profile-endpoint-hint" style="color:var(--muted); font-weight:400; font-size:12px;"></span></label>
@@ -240,6 +261,19 @@
       <input type="text" id="model-manual" placeholder="напр. qwen3:32b">
     </div>
     <div class="small" id="model-current">Активная модель: —</div>
+  </div>
+
+  <!-- Summary style -->
+  <div class="card">
+    <h2>Стиль итоговой заметки</h2>
+    <p class="hint">Насколько подробной делать заметку. Чем короче — тем быстрее работает локальная модель.</p>
+    <label for="summary-mode">Режим</label>
+    <select id="summary-mode">
+      <option value="compact">Compact — TL;DR, коуч, решения, действия, вопросы, риски (рекомендуется)</option>
+      <option value="minimal">Minimal — только TL;DR, коуч и действия (быстрее всего)</option>
+      <option value="full">Full — все разделы (карта, статусы, бизнес-контекст и т.д.)</option>
+    </select>
+    <div class="small" id="summary-mode-hint"></div>
   </div>
 
   <!-- Obsidian Vault -->
@@ -283,8 +317,12 @@ const refreshModelsBtn = document.getElementById('refresh-models');
 const profilesEl       = document.getElementById('profiles');
 const customFieldsEl   = document.getElementById('custom-fields');
 const customUrlInput   = document.getElementById('custom-url');
-const customKeyInput   = document.getElementById('custom-key');
+const keyFieldEl       = document.getElementById('key-field');
+const apiKeyInput      = document.getElementById('api-key');
+const keyStateEl       = document.getElementById('key-state');
 const profileEndpointHint = document.getElementById('profile-endpoint-hint');
+const summaryModeSelect = document.getElementById('summary-mode');
+const summaryModeHint   = document.getElementById('summary-mode-hint');
 
 const vaultStatusText  = document.getElementById('vault-status-text');
 const vaultStatusPill  = document.getElementById('vault-status-pill').querySelector('.pill');
@@ -307,8 +345,9 @@ let state = {
   activeProfile: 'openai',
   profiles: {},
   profileModels: {},   // {profile_id: chosen_model}
+  profileKeys: {},     // {profile_id: typed_key} — only keys typed this session
   customUrl: '',
-  customKey: '',
+  summaryMode: 'compact',
 };
 
 // ── Theme toggle ─────────────────────────────────────────────────────────────
@@ -330,13 +369,16 @@ async function init() {
     state.activeProfile     = d.active_profile || 'openai';
     state.profiles          = d.profiles || {};
     state.profileModels     = (d.settings?.LLM_PROFILE_MODELS) || {};
+    state.profileKeys       = {};
     state.customUrl         = d.settings?.LLM_CUSTOM_BASE_URL || '';
-    state.customKey         = d.settings?.LLM_CUSTOM_API_KEY || '';
+    state.summaryMode       = d.summary_mode || d.effective?.SUMMARY_MODE || 'compact';
     customUrlInput.value    = state.customUrl;
-    customKeyInput.value    = state.customKey;
+    summaryModeSelect.value = state.summaryMode;
+    updateSummaryHint();
     modelCurrent.textContent = 'Активная модель: ' + (state.llmModel || '—') + ' · ' + (state.profiles[state.activeProfile]?.label || '');
     modelManual.value = state.profileModels[state.activeProfile] || state.llmModel;
     renderProfiles();
+    renderKeyField();
     renderVaultStatus();
     updateSelectedPath();
     await loadModels();
@@ -370,25 +412,67 @@ function renderProfiles() {
   profileEndpointHint.textContent = activeUrl ? '· ' + activeUrl : '';
 }
 
+function renderKeyField() {
+  const p = state.profiles[state.activeProfile];
+  const needsKey = !!(p && p.needs_key);
+  keyFieldEl.classList.toggle('show', needsKey);
+  if (!needsKey) return;
+  // Show typed value for this session, else empty with a "saved" hint.
+  const typed = state.profileKeys[state.activeProfile];
+  apiKeyInput.value = (typed !== undefined) ? typed : '';
+  const hasSaved = !!p.has_key;
+  if (typed !== undefined && typed !== '') {
+    keyStateEl.textContent = '· будет сохранён';
+  } else if (hasSaved) {
+    keyStateEl.textContent = '· сохранён (введите новый, чтобы заменить)';
+    apiKeyInput.placeholder = '•••••••••• сохранён';
+  } else {
+    keyStateEl.textContent = '· не задан';
+    apiKeyInput.placeholder = 'sk-...';
+  }
+}
+
+function updateSummaryHint() {
+  const hints = {
+    compact: 'TL;DR + взгляд коуча + ключевые решения + действия + вопросы + риски/блокеры.',
+    minimal: 'Только TL;DR, краткий взгляд коуча и действия с владельцем/сроком. Самый быстрый.',
+    full:    'Все разделы: контекст, карта обсуждения, статусы разделов, бизнес-контекст, наблюдения. Медленнее всего на локальной модели.',
+  };
+  summaryModeHint.textContent = hints[state.summaryMode] || '';
+}
+
 function selectProfile(pid) {
   if (!state.profiles[pid] || pid === state.activeProfile) return;
   if (modelManual.value.trim()) {
     state.profileModels[state.activeProfile] = modelManual.value.trim();
   }
+  // Remember any typed key for the outgoing profile.
+  if (apiKeyInput.value.trim()) {
+    state.profileKeys[state.activeProfile] = apiKeyInput.value.trim();
+  }
   state.activeProfile = pid;
   modelManual.value = state.profileModels[pid] || state.profiles[pid].default_model || '';
   renderProfiles();
+  renderKeyField();
   loadModels();
 }
 
 customUrlInput.addEventListener('input', () => { state.customUrl = customUrlInput.value.trim(); renderProfiles(); });
-customKeyInput.addEventListener('input', () => { state.customKey = customKeyInput.value.trim(); });
+apiKeyInput.addEventListener('input', () => { state.profileKeys[state.activeProfile] = apiKeyInput.value.trim(); });
+summaryModeSelect.addEventListener('change', () => { state.summaryMode = summaryModeSelect.value; updateSummaryHint(); });
 
 // ── LLM models ───────────────────────────────────────────────────────────────
 async function loadModels() {
   modelSelect.innerHTML = '<option value="">— загрузка…</option>';
   try {
-    const r = await fetch('/api/llm-models');
+    const params = new URLSearchParams({ profile: state.activeProfile });
+    // Probe the currently-selected (possibly unsaved) profile.
+    if (state.activeProfile === 'custom' && state.customUrl) {
+      params.set('base_url', state.customUrl);
+    }
+    const typedKey = state.profileKeys[state.activeProfile];
+    if (typedKey) params.set('api_key', typedKey);
+    const r = await fetch('/api/llm-models?' + params.toString());
     const d = await r.json();
     state.availableModels = d.models || [];
     if (state.availableModels.length === 0) {
@@ -552,6 +636,7 @@ saveBtn.addEventListener('click', async () => {
   const model = (modelManual.value || modelSelect.value || '').trim();
   const sub   = (state.selectedSubfolder || '').trim();
   if (model) state.profileModels[state.activeProfile] = model;
+  if (apiKeyInput.value.trim()) state.profileKeys[state.activeProfile] = apiKeyInput.value.trim();
   saveBtn.disabled = true;
   saveStatus.textContent = 'Сохранение…';
   saveStatus.className = 'save-status';
@@ -560,11 +645,18 @@ saveBtn.addEventListener('click', async () => {
       LLM_PROFILE:         state.activeProfile,
       LLM_PROFILE_MODELS:  state.profileModels,
       LLM_MODEL:           model,
+      SUMMARY_MODE:        state.summaryMode,
       OBSIDIAN_SUBFOLDER:  sub,
     };
+    // Per-profile API keys for online profiles (only typed ones get sent).
+    const onlineKeys = {};
+    Object.keys(state.profileKeys).forEach(pid => {
+      if (pid !== 'custom' && state.profileKeys[pid]) onlineKeys[pid] = state.profileKeys[pid];
+    });
+    if (Object.keys(onlineKeys).length) payload.LLM_PROFILE_KEYS = onlineKeys;
     if (state.activeProfile === 'custom') {
       payload.LLM_CUSTOM_BASE_URL = state.customUrl;
-      payload.LLM_CUSTOM_API_KEY  = state.customKey;
+      if (state.profileKeys['custom']) payload.LLM_CUSTOM_API_KEY = state.profileKeys['custom'];
     }
     const r = await fetch('/api/settings', {
       method: 'POST',
@@ -575,6 +667,10 @@ saveBtn.addEventListener('click', async () => {
     const d = await r.json();
     state.llmModel = d.effective?.LLM_MODEL || model;
     state.profiles = d.profiles || state.profiles;
+    state.summaryMode = d.summary_mode || state.summaryMode;
+    // Clear typed keys from memory after a successful save; rely on has_key flags.
+    state.profileKeys = {};
+    renderKeyField();
     modelCurrent.textContent = 'Активная модель: ' + (state.llmModel || '—') + ' · ' + (state.profiles[state.activeProfile]?.label || '');
     flash('Сохранено');
   } catch (e) {
