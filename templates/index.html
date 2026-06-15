@@ -804,16 +804,18 @@
         <polyline points="17 8 12 3 7 8"/>
         <line x1="12" y1="3" x2="12" y2="15"/>
       </svg>
-      <p class="dz-text">Перетащите аудио- или видеофайл сюда</p>
+      <p class="dz-text">Перетащите аудио/видео или готовую транскрипцию</p>
       <p class="dz-sub">или <span id="browse-link">выберите файл</span></p>
-      <p class="dz-sub" style="margin-top:8px;">MP3, WAV, M4A, OGG, MP4, MKV, FLAC, AAC, WEBM</p>
-      <input type="file" id="file-input" accept=".mp3,.wav,.m4a,.ogg,.mp4,.mkv,.flac,.aac,.webm">
+      <p class="dz-sub" style="margin-top:8px;">Аудио/видео: MP3, WAV, M4A, OGG, MP4, MKV, FLAC, AAC, WEBM</p>
+      <p class="dz-sub" style="margin-top:4px;">Транскрипция: JSON (WhisperX) или TXT (*_speakers) — этап транскрибации пропускается</p>
+      <input type="file" id="file-input" accept=".mp3,.wav,.m4a,.ogg,.mp4,.mkv,.flac,.aac,.webm,.json,.txt">
     </div>
     <div id="file-badge">
       <span class="badge-name" id="badge-name"></span>
       <span class="badge-size" id="badge-size"></span>
       <button class="badge-remove" id="badge-remove" title="Убрать файл">✕</button>
     </div>
+    <p id="file-kind-hint" class="dz-sub" style="display:none;margin-top:10px;"></p>
   </div>
 
   <!-- Settings -->
@@ -961,6 +963,7 @@ const fileBadge    = document.getElementById('file-badge');
 const badgeName    = document.getElementById('badge-name');
 const badgeSize    = document.getElementById('badge-size');
 const badgeRemove  = document.getElementById('badge-remove');
+const fileKindHint = document.getElementById('file-kind-hint');
 const catSelect    = document.getElementById('cat-select');
 const subcatSelect = document.getElementById('subcat-select');
 const catAddBtn    = document.getElementById('cat-add-btn');
@@ -1094,6 +1097,18 @@ function setFile(file) {
   badgeName.textContent = file.name;
   badgeSize.textContent = formatBytes(file.size);
   fileBadge.classList.add('show');
+
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  if (ext === 'json') {
+    fileKindHint.textContent = '📄 Готовая транскрипция (JSON) — этап WhisperX будет пропущен, начнём с постобработки.';
+    fileKindHint.style.display = 'block';
+  } else if (ext === 'txt') {
+    fileKindHint.textContent = '📄 Готовый transcript (TXT) — WhisperX и постобработка пропускаются, сразу LLM-анализ.';
+    fileKindHint.style.display = 'block';
+  } else {
+    fileKindHint.style.display = 'none';
+    fileKindHint.textContent = '';
+  }
   updateStartBtnState();
 }
 
@@ -1101,6 +1116,8 @@ function clearFile() {
   selectedFile = null;
   fileInput.value = '';
   fileBadge.classList.remove('show');
+  fileKindHint.style.display = 'none';
+  fileKindHint.textContent = '';
   updateStartBtnState();
 }
 

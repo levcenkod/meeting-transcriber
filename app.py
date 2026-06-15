@@ -9,6 +9,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -304,8 +305,29 @@ def _ensure_dashboard(folder: Path, subfolder: str) -> None:
 
 _SUPPORTED_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".mp4", ".mkv", ".flac", ".aac", ".webm"}
 
+# Transcript formats — let the user skip the (slow) WhisperX step by uploading
+# an existing transcription directly:
+#   .json → raw WhisperX result (skip WhisperX, run postprocess + LLM)
+#   .txt  → ready *_speakers.txt (skip WhisperX + postprocess, run LLM only)
+_TRANSCRIPT_EXTS = {".json", ".txt"}
+
 # job_id -> {status, log_queue, result}
 _jobs: dict[str, dict] = {}
+
+
+def _transcript_stem(filename: str, ext: str) -> str:
+    """Derive the canonical stem from an uploaded transcript filename.
+
+    Strips the conventional *_speakers / *_anonymized_speakers suffixes so the
+    resulting summary is named after the meeting, not the transcript file.
+    """
+    name = Path(filename).stem
+    if ext == ".txt":
+        for suffix in ("_anonymized_speakers", "_speakers"):
+            if name.endswith(suffix):
+                name = name[: -len(suffix)]
+                break
+    return name or "transcript"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -471,11 +493,17 @@ def _run_step(job: dict, cmd: list, env: dict, label: str) -> bool:
         return False
 
 
-def _pipeline(job_id: str, audio_path: Path, category: str, subcategory: str,
+def _pipeline(job_id: str, source_path: Path, source_kind: str, stem: str,
+              category: str, subcategory: str,
               language: str, llm_enabled: bool) -> None:
-    """Main pipeline — runs in a background daemon thread."""
+    """Main pipeline — runs in a background daemon thread.
+
+    `source_kind` selects the entry point:
+        "audio"           — full pipeline (WhisperX → postprocess → LLM)
+        "transcript_json" — skip WhisperX, run postprocess + LLM
+        "transcript_txt"  — skip WhisperX + postprocess, run LLM only
+    """
     job = _jobs[job_id]
-    stem    = audio_path.stem
     cat_slug = _slugify_filename(category, 40) or "Общее"
     sub_slug = _slugify_filename(subcategory, 40) or "Без подкатегории"
     out_subdir = f"{cat_slug}/{sub_slug}"
@@ -497,21 +525,42 @@ def _pipeline(job_id: str, audio_path: Path, category: str, subcategory: str,
         if llm_url:
             env["LLM_BASE_URL"] = re.sub(r"localhost|127\.0\.0\.1", "host.docker.internal", llm_url)
 
-        # ── Step 1: WhisperX transcription ───────────────────────────────────
-        ok = _run_step(job, ["bash", "/scripts/entrypoint.sh", str(audio_path)], env,
-                       "WhisperX транскрипция")
-        if not ok:
-            job["status"] = "error"
-            return
+        # ── Step 1: WhisperX transcription (or skip via uploaded transcript) ──
+        if source_kind == "audio":
+            ok = _run_step(job, ["bash", "/scripts/entrypoint.sh", str(source_path)], env,
+                           "WhisperX транскрипция")
+            if not ok:
+                job["status"] = "error"
+                return
+        elif source_kind == "transcript_json":
+            json_dst = out_dir / f"{stem}.json"
+            try:
+                shutil.copyfile(source_path, json_dst)
+            except Exception as exc:
+                _log(job, f"✗ Не удалось сохранить загруженный JSON: {exc}", "error")
+                job["status"] = "error"
+                return
+            _log(job, "📄 Загружена готовая транскрипция (JSON) — шаг WhisperX пропущен", "ok")
+        elif source_kind == "transcript_txt":
+            speakers_dst = out_dir / f"{stem}_speakers.txt"
+            try:
+                shutil.copyfile(source_path, speakers_dst)
+            except Exception as exc:
+                _log(job, f"✗ Не удалось сохранить загруженный transcript: {exc}", "error")
+                job["status"] = "error"
+                return
+            _log(job, "📄 Загружен готовый transcript (TXT) — WhisperX и постобработка пропущены", "ok")
 
         # ── Step 2: Postprocess → _speakers.txt ─────────────────────────────
-        ok = _run_step(job, [
-            "python", "/scripts/postprocess.py",
-            "--output-dir", str(out_dir),
-            "--filename",   stem,
-        ], env, "Постобработка")
-        if not ok:
-            _log(job, "Постобработка завершилась с предупреждением, продолжаем...", "warn")
+        if source_kind in ("audio", "transcript_json"):
+            ok = _run_step(job, [
+                "python", "/scripts/postprocess.py",
+                "--output-dir", str(out_dir),
+                "--filename",   stem,
+            ], env, "Постобработка")
+            if not ok:
+                _log(job, "Постобработка завершилась с предупреждением, продолжаем...", "warn")
+
 
         # ── Step 3: LLM summary (optional) ──────────────────────────────────
         speakers_file = out_dir / f"{stem}_speakers.txt"
@@ -792,12 +841,23 @@ def upload():
 
     filename = Path(f.filename).name          # strip directory components
     ext      = Path(filename).suffix.lower()
-    if ext not in _SUPPORTED_EXTS:
+    if ext in _SUPPORTED_EXTS:
+        source_kind = "audio"
+    elif ext == ".json":
+        source_kind = "transcript_json"
+    elif ext == ".txt":
+        source_kind = "transcript_txt"
+    else:
         return jsonify({"error": f"Неподдерживаемый формат: {ext}"}), 400
 
     INPUT_DIR.mkdir(exist_ok=True)
-    audio_path = INPUT_DIR / filename
-    f.save(str(audio_path))
+    source_path = INPUT_DIR / filename
+    f.save(str(source_path))
+
+    # For transcripts, normalize the stem (strip *_speakers suffixes) so the
+    # summary is named after the meeting; for audio, use the raw stem.
+    stem = (_transcript_stem(filename, ext) if source_kind != "audio"
+            else Path(filename).stem)
 
     category    = (request.form.get("category") or "").strip()
     subcategory = (request.form.get("subcategory") or "").strip()
@@ -830,7 +890,7 @@ def upload():
 
     threading.Thread(
         target=_pipeline,
-        args=(job_id, audio_path, category, subcategory, language, llm_enabled),
+        args=(job_id, source_path, source_kind, stem, category, subcategory, language, llm_enabled),
         daemon=True,
     ).start()
 
