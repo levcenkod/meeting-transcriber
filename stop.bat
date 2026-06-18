@@ -18,6 +18,10 @@ if errorlevel 1 (
 )
 
 echo.
+echo Удаление устаревших (dangling) образов...
+docker image prune -f
+
+echo.
 echo App stopped. You can close this window.
 timeout /t 4 >nul
 exit /b 0
