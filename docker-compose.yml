@@ -15,6 +15,7 @@ services:
     volumes:
       - ./input:/input
       - ./output:/output
+      - ./inbox:/inbox
       - ./processed:/processed
       - ./failed:/failed
       - ./logs:/logs

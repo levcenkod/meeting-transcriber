@@ -27,6 +27,11 @@ VAULT_DIR    = Path("/vault")                 # host Obsidian Vault (mounted)
 SETTINGS_FILE   = OUTPUT_DIR / "_settings.json"    # UI-editable runtime settings
 CATEGORIES_FILE = OUTPUT_DIR / "_categories.json"  # user-defined cat/subcat tree
 
+# ── Watch folder ("воронка") — auto-ingest dropped files ─────────────────────
+INBOX_DIR     = Path("/inbox")        # drop files here → auto-processed
+PROCESSED_DIR = Path("/processed")    # source moved here on success
+FAILED_DIR    = Path("/failed")       # source moved here on failure
+
 
 # ── Runtime settings (UI-editable, persist on disk) ──────────────────────────
 
@@ -328,6 +333,44 @@ def _transcript_stem(filename: str, ext: str) -> str:
                 name = name[: -len(suffix)]
                 break
     return name or "transcript"
+
+
+def _detect_source_kind(ext: str) -> str | None:
+    """Map a file extension to a pipeline entry point, or None if unsupported."""
+    if ext in _SUPPORTED_EXTS:
+        return "audio"
+    if ext == ".json":
+        return "transcript_json"
+    if ext == ".txt":
+        return "transcript_txt"
+    return None
+
+
+def _register_category_pair(category: str, subcategory: str) -> None:
+    """Persist a category/subcategory pair so it shows up next time."""
+    cats = _load_categories()
+    if category not in cats:
+        cats[category] = []
+    if subcategory not in cats[category]:
+        cats[category].append(subcategory)
+    _save_categories(cats)
+
+
+def _create_job(filename: str, category: str, subcategory: str) -> str:
+    """Register a new job in the in-memory store and return its id."""
+    job_id = str(uuid.uuid4())[:8]
+    _jobs[job_id] = {
+        "status":      "pending",
+        "result":      None,
+        "filename":    filename,
+        "category":    category,
+        "subcategory": subcategory,
+        "started_at":  time.time(),
+        "finished_at": None,
+        "log_buffer":  [],     # list of message dicts (replayed on (re)connect)
+        "subscribers": [],     # list of queue.Queue, one per active SSE client
+    }
+    return job_id
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -841,13 +884,8 @@ def upload():
 
     filename = Path(f.filename).name          # strip directory components
     ext      = Path(filename).suffix.lower()
-    if ext in _SUPPORTED_EXTS:
-        source_kind = "audio"
-    elif ext == ".json":
-        source_kind = "transcript_json"
-    elif ext == ".txt":
-        source_kind = "transcript_txt"
-    else:
+    source_kind = _detect_source_kind(ext)
+    if source_kind is None:
         return jsonify({"error": f"Неподдерживаемый формат: {ext}"}), 400
 
     INPUT_DIR.mkdir(exist_ok=True)
@@ -868,25 +906,9 @@ def upload():
         return jsonify({"error": "Выберите категорию и подкатегорию перед запуском"}), 400
 
     # Auto-register the chosen pair so it persists for next time
-    cats = _load_categories()
-    if category not in cats:
-        cats[category] = []
-    if subcategory not in cats[category]:
-        cats[category].append(subcategory)
-    _save_categories(cats)
+    _register_category_pair(category, subcategory)
 
-    job_id = str(uuid.uuid4())[:8]
-    _jobs[job_id] = {
-        "status":      "pending",
-        "result":      None,
-        "filename":    filename,
-        "category":    category,
-        "subcategory": subcategory,
-        "started_at":  time.time(),
-        "finished_at": None,
-        "log_buffer":  [],     # list of message dicts (replayed on (re)connect)
-        "subscribers": [],     # list of queue.Queue, one per active SSE client
-    }
+    job_id = _create_job(filename, category, subcategory)
 
     threading.Thread(
         target=_pipeline,
@@ -1144,8 +1166,191 @@ def get_meeting():
     })
 
 
+# ── Watch folder ("воронка") ─────────────────────────────────────────────────
+# Files dropped into /inbox are auto-detected, processed through the normal
+# pipeline, then moved to /processed (success) or /failed (error).
+# Category/subcategory is taken from the subfolder layout inside /inbox
+#   /inbox/<Category>/<Subcategory>/file.mp3
+# falling back to env defaults when the file sits in the inbox root.
+
+# Temp/partial files that recorders/downloaders create while still writing.
+_WATCH_SKIP_SUFFIXES = (".tmp", ".part", ".crdownload", ".download", ".partial")
+
+_watch_seen: set[str] = set()        # absolute paths already enqueued/processing
+_watch_seen_lock = threading.Lock()
+_watch_queue: "queue.Queue[Path]" = queue.Queue()
+
+
+def _watch_enabled() -> bool:
+    return (os.environ.get("WATCH_ENABLED", "1").strip().lower()
+            not in ("0", "false", "no", "off", ""))
+
+
+def _watch_interval() -> float:
+    try:
+        return max(2.0, float(os.environ.get("WATCH_INTERVAL", "5")))
+    except (TypeError, ValueError):
+        return 5.0
+
+
+def _watch_defaults() -> tuple[str, str, str, bool]:
+    """Return (category, subcategory, language, llm_enabled) defaults for inbox root."""
+    cat = (os.environ.get("WATCH_DEFAULT_CATEGORY") or "Общее").strip() or "Общее"
+    sub = (os.environ.get("WATCH_DEFAULT_SUBCATEGORY") or "Без подкатегории").strip() or "Без подкатегории"
+    lang = (os.environ.get("LANGUAGE") or "ru").strip() or "ru"
+    llm = (os.environ.get("WATCH_LLM", "1").strip().lower()
+           not in ("0", "false", "no", "off", ""))
+    return cat, sub, lang, llm
+
+
+def _watch_category_for(path: Path) -> tuple[str, str]:
+    """Derive (category, subcategory) from the file's location under /inbox."""
+    def_cat, def_sub, _, _ = _watch_defaults()
+    try:
+        rel_parts = path.relative_to(INBOX_DIR).parts[:-1]  # drop the filename
+    except ValueError:
+        rel_parts = ()
+    category = rel_parts[0].strip() if len(rel_parts) >= 1 and rel_parts[0].strip() else def_cat
+    subcategory = rel_parts[1].strip() if len(rel_parts) >= 2 and rel_parts[1].strip() else def_sub
+    if not _valid_cat_name(category):
+        category = def_cat
+    if not _valid_cat_name(subcategory):
+        subcategory = def_sub
+    return category, subcategory
+
+
+def _file_is_stable(path: Path, checks: int = 2, gap: float = 2.0) -> bool:
+    """True if the file size stays unchanged across consecutive checks
+    (i.e. the upload/copy has finished)."""
+    try:
+        last = path.stat().st_size
+    except OSError:
+        return False
+    for _ in range(checks):
+        time.sleep(gap)
+        try:
+            cur = path.stat().st_size
+        except OSError:
+            return False
+        if cur != last:
+            last = cur
+            return False
+    return True
+
+
+def _unique_dest(base: Path, rel: Path) -> Path:
+    """Compute a non-colliding destination path under `base` for relative `rel`."""
+    dest = base / rel
+    if not dest.exists():
+        return dest
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    return base / rel.parent / f"{rel.stem}_{stamp}{rel.suffix}"
+
+
+def _move_processed(path: Path, success: bool) -> None:
+    """Move a finished inbox file to /processed or /failed, keeping subfolders."""
+    base = PROCESSED_DIR if success else FAILED_DIR
+    try:
+        rel = path.relative_to(INBOX_DIR)
+    except ValueError:
+        rel = Path(path.name)
+    dest = _unique_dest(base, rel)
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(path), str(dest))
+    except Exception as exc:
+        print(f"[WATCH] Не удалось переместить {path.name} → {base.name}: {exc}", flush=True)
+
+
+def _ingest_inbox_file(path: Path) -> None:
+    """Run the full pipeline on a single inbox file, then file it away."""
+    ext = path.suffix.lower()
+    source_kind = _detect_source_kind(ext)
+    if source_kind is None:
+        return
+    filename = path.name
+    stem = (_transcript_stem(filename, ext) if source_kind != "audio"
+            else Path(filename).stem)
+    category, subcategory = _watch_category_for(path)
+    _, _, language, llm_enabled = _watch_defaults()
+    _register_category_pair(category, subcategory)
+
+    job_id = _create_job(filename, category, subcategory)
+    print(f"[WATCH] Принят файл из воронки: {filename} → {category}/{subcategory}", flush=True)
+    try:
+        # Run synchronously inside the worker thread (already a background thread).
+        _pipeline(job_id, path, source_kind, stem, category, subcategory, language, llm_enabled)
+    except Exception as exc:
+        print(f"[WATCH] Ошибка обработки {filename}: {exc}", flush=True)
+    success = _jobs.get(job_id, {}).get("status") == "done"
+    _move_processed(path, success)
+
+
+def _watch_scanner() -> None:
+    """Periodically scan /inbox and enqueue new, fully-written files."""
+    while True:
+        try:
+            if _watch_enabled() and INBOX_DIR.exists():
+                for path in sorted(INBOX_DIR.rglob("*")):
+                    if not path.is_file():
+                        continue
+                    name = path.name
+                    if name.startswith(".") or name.lower().endswith(_WATCH_SKIP_SUFFIXES):
+                        continue
+                    if _detect_source_kind(path.suffix.lower()) is None:
+                        continue
+                    key = str(path)
+                    with _watch_seen_lock:
+                        if key in _watch_seen:
+                            continue
+                    if not _file_is_stable(path):
+                        continue
+                    with _watch_seen_lock:
+                        if key in _watch_seen:
+                            continue
+                        _watch_seen.add(key)
+                    _watch_queue.put(path)
+        except Exception as exc:
+            print(f"[WATCH] Ошибка сканера: {exc}", flush=True)
+        time.sleep(_watch_interval())
+
+
+def _watch_worker() -> None:
+    """Process queued inbox files one at a time, waiting for other jobs to finish."""
+    while True:
+        path = _watch_queue.get()
+        try:
+            # Serialize with UI-triggered jobs (GPU is single-tenant).
+            while any(j.get("status") == "running" for j in _jobs.values()):
+                time.sleep(3)
+            _ingest_inbox_file(path)
+        except Exception as exc:
+            print(f"[WATCH] Ошибка воркера: {exc}", flush=True)
+        finally:
+            with _watch_seen_lock:
+                _watch_seen.discard(str(path))
+            _watch_queue.task_done()
+
+
+def _start_watcher() -> None:
+    """Create the inbox/processed/failed folders and launch watcher threads."""
+    if not _watch_enabled():
+        print("[WATCH] Воронка отключена (WATCH_ENABLED=0).", flush=True)
+        return
+    for d in (INBOX_DIR, PROCESSED_DIR, FAILED_DIR):
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+    threading.Thread(target=_watch_scanner, daemon=True, name="watch-scanner").start()
+    threading.Thread(target=_watch_worker, daemon=True, name="watch-worker").start()
+    print(f"[WATCH] Воронка активна: бросайте файлы в /inbox "
+          f"(интервал {int(_watch_interval())} c).", flush=True)
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     INPUT_DIR.mkdir(exist_ok=True)
+    _start_watcher()
     app.run(host="0.0.0.0", port=8080, threaded=True)
