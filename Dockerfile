@@ -13,6 +13,14 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     git \
     curl \
+    pkg-config \
+    libavformat-dev \
+    libavcodec-dev \
+    libavdevice-dev \
+    libavutil-dev \
+    libswscale-dev \
+    libswresample-dev \
+    libavfilter-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Set python3.10 as default python
