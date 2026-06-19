@@ -25,21 +25,21 @@ RUN pip install --upgrade pip
 # Install PyTorch with CUDA 12.1 support (also works on CPU)
 RUN pip install torch==2.1.2 torchaudio==2.1.2 --index-url https://download.pytorch.org/whl/cu121
 
-# Install WhisperX and dependencies
-RUN pip install whisperx
+# Pin torch/torchaudio (and triton — torch's CUDA dependency) via a pip
+# constraints file so that NO subsequent install (whisperx, pyannote.audio, ...)
+# is ever allowed to swap them out.
+# Without this, pip's dependency resolver "backtracks" and re-downloads multiple
+# 2+ GB torch wheels and the ~200 MB triton wheel (and may replace the CUDA build
+# with a CPU build), which is what makes the build hang for ~20 minutes.
+RUN printf 'torch==2.1.2\ntorchaudio==2.1.2\ntriton==2.1.0\n' > /constraints.txt
+ENV PIP_CONSTRAINT=/constraints.txt
 
-# Install pyannote.audio for diarization
-RUN pip install pyannote.audio
+# Install WhisperX, pyannote.audio (diarization), OpenAI client, Flask and spaCy
+# in a single resolver pass. The constraint above keeps torch fixed.
+RUN pip install whisperx pyannote.audio openai flask spacy
 
-# Install OpenAI-compatible client (used by summarize.py)
-RUN pip install openai
-
-# Install Flask for the web UI
-RUN pip install flask
-
-# Install spaCy for local PII anonymization (used by anonymize.py)
+# Download spaCy models for local PII anonymization (used by anonymize.py).
 # Models downloaded at build time; falls back to regex-only if download fails
-RUN pip install spacy
 RUN python -m spacy download ru_core_news_md || python -m spacy download ru_core_news_sm || echo "[WARN] No Russian spaCy model - anonymization will use regex only"
 RUN python -m spacy download en_core_web_sm || echo "[WARN] No English spaCy model"
 
