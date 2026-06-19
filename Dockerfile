@@ -39,7 +39,9 @@ RUN pip install torch==2.1.2 torchaudio==2.1.2 --index-url https://download.pyto
 # Without this, pip's dependency resolver "backtracks" and re-downloads multiple
 # 2+ GB torch wheels and the ~200 MB triton wheel (and may replace the CUDA build
 # with a CPU build), which is what makes the build hang for ~20 minutes.
-RUN printf 'torch==2.1.2\ntorchaudio==2.1.2\ntriton==2.1.0\n' > /constraints.txt
+# numpy is pinned to the last 1.x release: pyannote.audio still uses np.NaN,
+# which was removed in NumPy 2.0 (would crash WhisperX at runtime).
+RUN printf 'torch==2.1.2\ntorchaudio==2.1.2\ntriton==2.1.0\nnumpy<2\n' > /constraints.txt
 ENV PIP_CONSTRAINT=/constraints.txt
 
 # Install WhisperX, pyannote.audio (diarization), OpenAI client, Flask and spaCy
