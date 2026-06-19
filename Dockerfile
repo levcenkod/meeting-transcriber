@@ -44,9 +44,16 @@ RUN pip install torch==2.1.2 torchaudio==2.1.2 --index-url https://download.pyto
 RUN printf 'torch==2.1.2\ntorchaudio==2.1.2\ntriton==2.1.0\nnumpy<2\n' > /constraints.txt
 ENV PIP_CONSTRAINT=/constraints.txt
 
-# Install WhisperX, pyannote.audio (diarization), OpenAI client, Flask and spaCy
-# in a single resolver pass. The constraint above keeps torch fixed.
-RUN pip install whisperx pyannote.audio openai flask spacy
+# Install WhisperX (pinned), OpenAI client, Flask and spaCy in a single
+# resolver pass. The constraint above keeps torch fixed.
+#
+# WhisperX is pinned to 3.1.1 on purpose:
+#   * its CLI matches entrypoint.sh (--diarize_model, --hf_token, --compute_type).
+#     Newer whisperx releases got dragged in/out by the resolver and dropped
+#     --diarize_model, causing "unrecognized arguments: --diarize_model".
+#   * it pulls pyannote.audio==3.1.1 and a ctranslate2/faster-whisper combo that
+#     is compatible with this image's CUDA 12.1 + cuDNN 8 (newer ones need cuDNN 9).
+RUN pip install whisperx==3.1.1 openai flask spacy
 
 # Download spaCy models for local PII anonymization (used by anonymize.py).
 # Models downloaded at build time; falls back to regex-only if download fails

@@ -63,12 +63,14 @@ fi
 
 echo "[INFO] Запуск WhisperX..."
 
+# NB: whisperx 3.1.1 не принимает --diarize_model в CLI — модель диаризации в нём
+# зашита как pyannote/speaker-diarization-3.1 (совпадает с DIARIZE_MODEL по умолчанию).
+# Передача --diarize_model вызывала "unrecognized arguments", поэтому здесь его нет.
 whisperx "$INPUT_FILE" \
     --model "$MODEL" \
     --language "$LANGUAGE" \
     --diarize \
     --hf_token "$HF_TOKEN" \
-    --diarize_model "$DIARIZE_MODEL" \
     --device "$DEVICE" \
     --compute_type "$COMPUTE_TYPE" \
     --output_dir "$OUTPUT_DIR" \
