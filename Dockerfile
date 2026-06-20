@@ -33,27 +33,24 @@ RUN pip install --upgrade pip
 # Install PyTorch with CUDA 12.1 support (also works on CPU)
 RUN pip install torch==2.1.2 torchaudio==2.1.2 --index-url https://download.pytorch.org/whl/cu121
 
-# Pin torch/torchaudio (and triton — torch's CUDA dependency) via a pip
-# constraints file so that NO subsequent install (whisperx, pyannote.audio, ...)
-# is ever allowed to swap them out.
-# Without this, pip's dependency resolver "backtracks" and re-downloads multiple
-# 2+ GB torch wheels and the ~200 MB triton wheel (and may replace the CUDA build
-# with a CPU build), which is what makes the build hang for ~20 minutes.
-# numpy is pinned to the last 1.x release: pyannote.audio still uses np.NaN,
-# which was removed in NumPy 2.0 (would crash WhisperX at runtime).
+# Pin torch/torchaudio/triton so that the pip resolver never re-downloads them
+# while installing whisperx and its deps (was causing 20-min hangs due to
+# backtracking over 2 GB CUDA wheels).
+# numpy is held at <2 because some pyannote internals still use np.NaN (removed
+# in NumPy 2.0). numpy 1.26.4 works fine with everything below.
+#
+# We do NOT pin faster-whisper / transformers / huggingface-hub here.
+# whisperx 3.1.1 (PyPI) declares faster-whisper>=0.10.0 in its own setup.py,
+# so pinning 0.9.0 caused ResolutionImpossible. Instead we use the latest
+# official whisperx (3.8+) which is written for modern faster-whisper and
+# resolves cleanly. The old --diarize_model arg has already been removed from
+# entrypoint.sh so there is no CLI mismatch.
 RUN printf 'torch==2.1.2\ntorchaudio==2.1.2\ntriton==2.1.0\nnumpy<2\n' > /constraints.txt
 ENV PIP_CONSTRAINT=/constraints.txt
 
-# Install WhisperX (pinned), OpenAI client, Flask and spaCy in a single
-# resolver pass. The constraint above keeps torch fixed.
-#
-# WhisperX is pinned to 3.1.1 on purpose:
-#   * its CLI matches entrypoint.sh (--diarize_model, --hf_token, --compute_type).
-#     Newer whisperx releases got dragged in/out by the resolver and dropped
-#     --diarize_model, causing "unrecognized arguments: --diarize_model".
-#   * it pulls pyannote.audio==3.1.1 and a ctranslate2/faster-whisper combo that
-#     is compatible with this image's CUDA 12.1 + cuDNN 8 (newer ones need cuDNN 9).
-RUN pip install whisperx==3.1.1 openai flask spacy
+# Install WhisperX (latest official release), OpenAI client, Flask and spaCy.
+# The constraint above keeps torch/torchaudio/triton fixed across all installs.
+RUN pip install whisperx openai flask spacy
 
 # Download spaCy models for local PII anonymization (used by anonymize.py).
 # Models downloaded at build time; falls back to regex-only if download fails
