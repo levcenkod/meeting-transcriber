@@ -44,6 +44,8 @@ CREATE TABLE IF NOT EXISTS meeting (
     category     TEXT DEFAULT '',
     subcategory  TEXT DEFAULT '',
     audio        TEXT DEFAULT '',
+    n_actions    INTEGER NOT NULL DEFAULT 0,
+    n_decisions  INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at   TEXT,
     UNIQUE (dir, stem)
@@ -70,6 +72,7 @@ CREATE TABLE IF NOT EXISTS proposal (
     quote_verified  INTEGER NOT NULL DEFAULT 0,
     t_sec           INTEGER,
     context         TEXT DEFAULT '',              -- контекст из извлечения
+    section         TEXT DEFAULT '',              -- раздел/тема из извлечения
     source_deadline TEXT DEFAULT '',             -- срок словами из речи (подсветка)
     extractor       TEXT DEFAULT '',             -- какой моделью извлечено
     updated_at      TEXT,
@@ -234,13 +237,26 @@ def sync_meetings_from_output(output_dir: Path) -> dict:
             if con.total_changes > before:
                 stats["imported"] += 1
             actions_path = meta_path.parent / f"{stem}_actions.json"
+            n_actions = 0
             if actions_path.exists():
                 try:
                     actions = json.loads(actions_path.read_text(encoding="utf-8"))
                     if isinstance(actions, list):
+                        n_actions = len(actions)
                         sync_proposals(con, mid, actions)
                 except Exception:
                     pass
+            n_decisions = 0
+            dec_path = meta_path.parent / f"{stem}_decisions.json"
+            if dec_path.exists():
+                try:
+                    dec = json.loads(dec_path.read_text(encoding="utf-8"))
+                    if isinstance(dec, list):
+                        n_decisions = len(dec)
+                except Exception:
+                    pass
+            con.execute("UPDATE meeting SET n_actions = ?, n_decisions = ? WHERE id = ?",
+                        (n_actions, n_decisions, mid))
     return stats
 
 
@@ -271,6 +287,7 @@ def _action_to_fields(a: dict) -> dict:
         "quote_verified":  int(bool(a.get("quote_verified"))),
         "t_sec":           a.get("t_sec"),
         "context":         a.get("context") or "",
+        "section":         a.get("section") or "",
         "source_deadline": a.get("deadline") or "",
         "extractor":       a.get("extractor") or "",
     }
@@ -416,6 +433,121 @@ def journal_append(con: sqlite3.Connection, *, text: str, owner: str,
          trello_card_id, trello_url),
     )
     return int(cur.lastrowid)
+
+
+# ─── аналитика: Брифинг / Расписание / Пульс ─────────────────────────────────
+
+_LABEL_RE = re.compile(r"^(SPEAKER|PERSON|UNKNOWN)[_ ]?", re.IGNORECASE)
+
+
+def meetings_all(con: sqlite3.Connection) -> list[dict]:
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM meeting WHERE date != '' ORDER BY date DESC, id DESC")]
+
+
+def series_stats(con: sqlite3.Connection) -> list[dict]:
+    """Серии = категории; ритм посчитан по реальным записям, не по расписанию."""
+    import datetime as _dt
+    groups: dict[str, list[dict]] = {}
+    for m in meetings_all(con):
+        groups.setdefault(m["category"] or "Общее", []).append(m)
+    today = _dt.date.today()
+    res = []
+    for s, ms in groups.items():
+        dates = sorted(m["date"] for m in ms)
+        try:
+            span = max(1, (_dt.date.fromisoformat(dates[-1])
+                           - _dt.date.fromisoformat(dates[0])).days)
+            days_since = (today - _dt.date.fromisoformat(dates[-1])).days
+        except ValueError:
+            continue
+        per_week = round(len(ms) / (span / 7), 1) if len(ms) > 1 else 1.0 * len(ms)
+        res.append({
+            "series": s, "n": len(ms),
+            "last_date": dates[-1], "days_since": days_since,
+            "per_week": per_week,
+            "n_actions": sum(m["n_actions"] or 0 for m in ms),
+            "n_decisions": sum(m["n_decisions"] or 0 for m in ms),
+        })
+    res.sort(key=lambda x: x["last_date"], reverse=True)
+    return res
+
+
+def open_tasks_for_series(con: sqlite3.Connection, category: str,
+                          limit: int = 12) -> list[dict]:
+    """Задачи серии, ещё не ушедшие в Trello (kind=task, не отправлены)."""
+    rows = con.execute(
+        """
+        SELECT p.*, m.date AS m_date, m.title AS m_title
+        FROM proposal p JOIN meeting m ON m.id = p.meeting_id
+        WHERE m.category = ? AND p.kind = 'task'
+          AND p.status IN ('proposed', 'accepted')
+        ORDER BY m.date DESC, p.idx
+        LIMIT ?
+        """,
+        (category, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def pulse_summary(con: sqlite3.Connection, days: int = 90) -> dict:
+    """Данные Пульса из SQLite; Trello не нужен (сверка — отдельной кнопкой)."""
+    import datetime as _dt
+    from collections import Counter
+
+    today = _dt.date.today()
+    since = (today - _dt.timedelta(days=days)).isoformat()
+    ms = [m for m in meetings_all(con) if m["date"] >= since]
+
+    mids = [m["id"] for m in ms]
+    props: list[dict] = []
+    if mids:
+        marks = ", ".join("?" for _ in mids)
+        props = [dict(r) for r in con.execute(
+            f"SELECT * FROM proposal WHERE meeting_id IN ({marks})", mids)]
+    tasks = [p for p in props if p["kind"] == "task"]
+
+    def _is_label(o: str | None) -> bool:
+        return bool(o) and bool(_LABEL_RE.match(o))
+
+    no_owner = sum(1 for p in tasks if not p["owner"] or _is_label(p["owner"]))
+    by_owner = Counter(p["owner"] for p in tasks
+                       if p["owner"] and not _is_label(p["owner"]))
+    by_section = Counter((p["section"] or "").strip() for p in props
+                         if (p["section"] or "").strip())
+
+    weeks = [0] * 12
+    for m in ms:
+        try:
+            wk = (today - _dt.date.fromisoformat(m["date"])).days // 7
+        except ValueError:
+            continue
+        if 0 <= wk < 12:
+            weeks[11 - wk] += 1
+
+    journal = [dict(r) for r in con.execute(
+        "SELECT * FROM dispatch_journal ORDER BY id DESC LIMIT 10")]
+
+    return {
+        "days": days,
+        "n_meetings": len(ms),
+        "n_actions": sum(m["n_actions"] or 0 for m in ms),
+        "n_decisions": sum(m["n_decisions"] or 0 for m in ms),
+        "n_tasks": len(tasks),
+        "no_owner": no_owner,
+        "by_owner": by_owner.most_common(8),
+        "by_section": by_section.most_common(8),
+        "weeks": weeks,
+        "silent": [s for s in series_stats(con) if s["days_since"] > 14],
+        "journal": journal,
+    }
+
+
+def journal_with_cards(con: sqlite3.Connection, limit: int = 50) -> list[dict]:
+    rows = con.execute(
+        "SELECT * FROM dispatch_journal WHERE trello_card_id != '' "
+        "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ─── backup ──────────────────────────────────────────────────────────────────

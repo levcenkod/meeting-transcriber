@@ -1548,6 +1548,159 @@ def api_send_to_trello(meeting_id: int):
     return jsonify({"ok": True, "sent": sent, "skipped": skipped})
 
 
+# ── Дашборд (вторая неделя ТЗ v0): Брифинг / Расписание / Пульс ─────────────
+
+def _strip_frontmatter(md: str) -> str:
+    if md.startswith("---"):
+        end = md.find("\n---", 3)
+        if end != -1:
+            return md[end + 4:].lstrip()
+    return md
+
+
+def _meeting_files(m: dict) -> Path:
+    return OUTPUT_DIR / m["dir"]
+
+
+def _brief_extras(m: dict) -> dict:
+    """Решения / нерешённое / риски / блокеры из файлов встречи."""
+    out_dir = _meeting_files(m)
+    stem = m["stem"]
+    res = {"summary": "", "decisions": [], "open_questions": [],
+           "risks": [], "blockers": []}
+    sp = out_dir / f"{stem}_summary.md"
+    if sp.exists():
+        try:
+            res["summary"] = _strip_frontmatter(
+                sp.read_text(encoding="utf-8"))[:900]
+        except Exception:
+            pass
+
+    def _texts(items, *keys):
+        vals = []
+        for it in items or []:
+            if isinstance(it, str):
+                vals.append(it)
+            elif isinstance(it, dict):
+                for k in keys:
+                    if it.get(k):
+                        vals.append(str(it[k]))
+                        break
+        return vals
+
+    dp = out_dir / f"{stem}_decisions.json"
+    if dp.exists():
+        try:
+            res["decisions"] = _texts(
+                json.loads(dp.read_text(encoding="utf-8")),
+                "decision", "text", "title")[:6]
+        except Exception:
+            pass
+    ap = out_dir / f"{stem}_analysis.json"
+    if ap.exists():
+        try:
+            analysis = json.loads(ap.read_text(encoding="utf-8"))
+            res["open_questions"] = _texts(
+                analysis.get("open_questions"), "question", "text")[:6]
+            res["risks"] = _texts(analysis.get("risks"),
+                                  "risk", "text", "description")[:5]
+            res["blockers"] = _texts(analysis.get("blockers"),
+                                     "blocker", "text", "description")[:5]
+        except Exception:
+            pass
+    return res
+
+
+@app.route("/brief")
+@app.route("/schedule")
+@app.route("/pulse")
+def dashboard_page():
+    return render_template("dashboard.html")
+
+
+@app.route("/api/schedule")
+def api_schedule():
+    if state_db is None:
+        return jsonify({"series": []})
+    with state_db.get_db() as con:
+        return jsonify({"series": state_db.series_stats(con)})
+
+
+@app.route("/api/brief")
+def api_brief():
+    if state_db is None:
+        return jsonify({"error": "БД недоступна"}), 500
+    category = (request.args.get("category") or "").strip()
+    with state_db.get_db() as con:
+        series = state_db.series_stats(con)
+        if not series:
+            return jsonify({"series": [], "category": "", "last": None})
+        if not category or category not in {s["series"] for s in series}:
+            category = series[0]["series"]
+        meetings = [m for m in state_db.meetings_all(con)
+                    if (m["category"] or "Общее") == category]
+        open_tasks = state_db.open_tasks_for_series(con, category)
+    last = meetings[0] if meetings else None
+    extras = _brief_extras(last) if last else {}
+    return jsonify({
+        "series": series,
+        "category": category,
+        "last": last,
+        "extras": extras,
+        "open_tasks": open_tasks,
+        "recent": meetings[:6],
+    })
+
+
+@app.route("/api/pulse")
+def api_pulse():
+    if state_db is None:
+        return jsonify({"error": "БД недоступна"}), 500
+    try:
+        days = max(7, min(365, int(request.args.get("days", "90"))))
+    except ValueError:
+        days = 90
+    with state_db.get_db() as con:
+        data = state_db.pulse_summary(con, days)
+    data["trello_ready"] = bool(trello_client and trello_client.configured())
+    return jsonify(data)
+
+
+@app.route("/api/pulse/compare", methods=["POST"])
+def api_pulse_compare():
+    """Сверка «первый срок против текущего» — разово, по кнопке (ADR-001)."""
+    if state_db is None:
+        return jsonify({"error": "БД недоступна"}), 500
+    if trello_client is None or not trello_client.configured():
+        return jsonify({"ok": False, "error": "Trello не настроен"}), 400
+    with state_db.get_db() as con:
+        rows = state_db.journal_with_cards(con)
+    out = []
+    for r in rows:
+        card = trello_client.get_card(r["trello_card_id"])
+        cur = ""
+        closed = False
+        if card:
+            cur = (card.get("due") or "")[:10]
+            closed = bool(card.get("closed") or card.get("dueComplete"))
+        moved = 0
+        if cur and r.get("due_v1"):
+            try:
+                from datetime import date
+                moved = (date.fromisoformat(cur)
+                         - date.fromisoformat(r["due_v1"])).days
+            except ValueError:
+                moved = 0
+        out.append({
+            "text": r["text"], "owner": r["owner"],
+            "due_v1": r["due_v1"], "current_due": cur,
+            "moved_days": moved, "closed": closed,
+            "missing": card is None,
+            "url": r["trello_url"],
+        })
+    return jsonify({"ok": True, "rows": out})
+
+
 # ── Watch folder ("воронка") ─────────────────────────────────────────────────
 # Files dropped into /inbox are auto-detected, processed through the normal
 # pipeline, then moved to /processed (success) or /failed (error).
@@ -1752,11 +1905,23 @@ def _db_register_meeting(out_dir: Path, stem: str) -> None:
         rel = out_dir.resolve().relative_to(OUTPUT_DIR.resolve()).as_posix()
         with state_db.get_db() as con:
             mid = state_db.upsert_meeting(con, rel, stem, meta, chash)
+            n_actions = n_decisions = 0
             actions_path = out_dir / f"{stem}_actions.json"
             if actions_path.exists():
                 actions = json.loads(actions_path.read_text(encoding="utf-8"))
                 if isinstance(actions, list):
+                    n_actions = len(actions)
                     state_db.sync_proposals(con, mid, actions)
+            dec_path = out_dir / f"{stem}_decisions.json"
+            if dec_path.exists():
+                try:
+                    dec = json.loads(dec_path.read_text(encoding="utf-8"))
+                    if isinstance(dec, list):
+                        n_decisions = len(dec)
+                except Exception:
+                    pass
+            con.execute("UPDATE meeting SET n_actions = ?, n_decisions = ? WHERE id = ?",
+                        (n_actions, n_decisions, mid))
     except Exception as exc:
         print(f"[DB] upsert встречи {stem}: {exc}", flush=True)
 

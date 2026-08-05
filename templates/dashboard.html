@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Пульс — Транскрайбер</title>
+<style>
+:root{
+  --ink:#0d1117;--ink2:#243040;--muted:#5b6b7c;--faint:#8b98a8;
+  --line:rgba(16,40,60,.13);--hair:rgba(16,40,60,.07);--solid:#fff;
+  --glass:rgba(255,255,255,.8);--accent:#0e7490;--green:#059669;
+  --amber:#b45309;--red:#e11d48;--violet:#7c3aed;
+  --grad:linear-gradient(115deg,#4f46e5,#0891b2 55%,#06b6d4);
+  --r:16px;--sh:0 1px 2px rgba(13,17,23,.05),0 6px 18px rgba(13,17,23,.05);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;color:var(--ink);
+  font-size:14.5px;line-height:1.55;background:#eef3fa;padding-bottom:60px}
+body:before{content:"";position:fixed;inset:0;z-index:-1;background:
+  radial-gradient(820px 620px at 12% -10%,rgba(79,70,229,.15),transparent 58%),
+  radial-gradient(760px 560px at 92% 2%,rgba(6,182,212,.15),transparent 60%),
+  linear-gradient(160deg,#f7fbfe,#eef3fa 45%,#e8eef7)}
+.wrap{max-width:1080px;margin:0 auto;padding:22px 16px}
+.top{display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.top h1{font-size:26px;font-weight:750;letter-spacing:-.03em;
+  background:linear-gradient(120deg,#0d1117 20%,#334155 60%,#0e7490);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.top .links{margin-left:auto;display:flex;gap:8px}
+.top .links a{font-size:13px;color:var(--accent);text-decoration:none;
+  border:1px solid var(--line);border-radius:999px;padding:7px 14px;background:var(--solid)}
+.tabs{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap}
+.tab{padding:9px 16px;border-radius:999px;border:1px solid var(--line);background:var(--solid);
+  font:inherit;font-size:13.5px;font-weight:600;cursor:pointer;color:var(--muted)}
+.tab[aria-selected="true"]{background:var(--grad);color:#fff;border-color:transparent}
+.chipbar{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:5px 12px;border-radius:20px;
+  font-size:12px;font-weight:650;border:1px solid var(--line);color:var(--muted);
+  background:var(--solid);cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--grad);color:#fff;border-color:transparent}
+.chip.static{cursor:default}
+.chip.r{color:var(--red);border-color:rgba(225,29,72,.26);background:rgba(225,29,72,.07)}
+.chip.g{color:var(--green);border-color:rgba(5,150,105,.28);background:rgba(5,150,105,.08)}
+.card{background:var(--glass);border:1px solid var(--line);border-radius:var(--r);
+  padding:16px 18px;box-shadow:var(--sh);margin-bottom:14px}
+.card>h2{font-size:11px;letter-spacing:.13em;text-transform:uppercase;font-weight:750;
+  margin-bottom:12px;background:var(--grad);-webkit-background-clip:text;
+  background-clip:text;color:transparent}
+.card>h2 .n{color:var(--faint);-webkit-text-fill-color:var(--faint);font-weight:600}
+.cols{display:grid;grid-template-columns:1fr 360px;gap:14px;align-items:start}
+@media(max-width:960px){.cols{grid-template-columns:1fr}}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:14px}
+.kpi{background:var(--glass);border:1px solid var(--line);border-radius:var(--r);
+  padding:14px 16px;box-shadow:var(--sh);position:relative;overflow:hidden}
+.kpi .l{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:700}
+.kpi .v{font-size:27px;font-weight:750;letter-spacing:-.04em;margin:5px 0 2px}
+.kpi .s{font-size:11.5px;color:var(--faint)}
+.kpi:after{content:"";position:absolute;left:0;bottom:0;height:3px;width:100%;background:var(--grad)}
+.kpi.bad:after{background:linear-gradient(90deg,#fb7185,#e11d48)}
+.kpi.bad .v{color:var(--red)}
+.box{border-radius:12px;padding:11px 14px;font-size:13.5px;margin-bottom:10px;line-height:1.5}
+.box.w{background:rgba(180,83,9,.08);border:1px solid rgba(180,83,9,.2)}
+.box.r{background:rgba(225,29,72,.07);border:1px solid rgba(225,29,72,.2)}
+.box.d{background:linear-gradient(120deg,rgba(79,70,229,.09),rgba(6,182,212,.07));
+  border:1px solid rgba(79,70,229,.18)}
+.li{padding:7px 0 7px 16px;position:relative;font-size:13.5px;border-bottom:1px solid var(--hair)}
+.li:last-child{border-bottom:0}
+.li:before{content:"";position:absolute;left:2px;top:14px;width:6px;height:6px;
+  border-radius:50%;background:var(--accent);opacity:.55}
+.hbar{margin-bottom:11px}
+.hl{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px}
+.hl b{font-variant-numeric:tabular-nums}
+.track{height:9px;border-radius:6px;background:rgba(16,40,60,.07);overflow:hidden}
+.track i{display:block;height:100%;background:var(--grad)}
+.track i.warn{background:linear-gradient(90deg,#fb7185,#e11d48)}
+.tc{font-variant-numeric:tabular-nums;color:var(--faint);font-size:12px}
+.muted{color:var(--muted)}
+.btn{padding:9px 15px;border-radius:999px;border:1px solid var(--line);background:var(--solid);
+  font:inherit;font-size:13px;font-weight:600;color:var(--ink2);cursor:pointer;box-shadow:var(--sh)}
+.btn.p{background:var(--grad);color:#fff;border:0}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.empty{text-align:center;padding:24px 14px;color:var(--faint)}
+.empty b{display:block;color:var(--ink2);font-size:15px;margin:6px 0 3px}
+.mcard{display:block;width:100%;text-align:left;border:1px solid var(--line);border-radius:13px;
+  padding:11px 14px;margin-bottom:8px;background:var(--solid);font:inherit}
+.mcard b{font-size:13.5px;display:block;margin:2px 0}
+.spark{width:100%;height:56px;display:block}
+.sum{font-size:13.5px;line-height:1.6;white-space:pre-wrap;color:var(--ink2);
+  max-height:260px;overflow:auto}
+.toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(20px);
+  background:rgba(13,17,23,.93);color:#fff;padding:11px 18px;border-radius:13px;
+  font-size:13.5px;opacity:0;transition:.25s;z-index:99;pointer-events:none}
+.toast.on{opacity:1;transform:translateX(-50%)}
+table.cmp{width:100%;border-collapse:collapse;font-size:12.5px}
+table.cmp td,table.cmp th{padding:7px 8px;border-bottom:1px solid var(--hair);text-align:left;vertical-align:top}
+table.cmp th{font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
+.wrap-x{overflow-x:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <h1 id="page-title">Пульс</h1>
+    <div class="links">
+      <a href="/inbox">📥 Приёмка</a>
+      <a href="/">🎙 Транскрайбер</a>
+    </div>
+  </div>
+  <div class="tabs" id="tabs"></div>
+  <div id="app"><div class="empty">Загружаю…</div></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let toastT;
+function toast(m){const t=$('toast');t.textContent=m;t.classList.add('on');
+  clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove('on'),2800)}
+const fd=s=>{if(!s)return '—';const d=new Date(s+'T00:00:00');
+  return d.toLocaleDateString('ru-RU',{day:'numeric',month:'short'})};
+const mmss=t=>t==null?'':Math.floor(t/60)+':'+String(t%60).padStart(2,'0');
+
+const TABS=[{k:'brief',t:'⏱ Брифинг'},{k:'schedule',t:'📅 Расписание'},{k:'pulse',t:'📈 Пульс'}];
+let TAB=(location.pathname.replace('/','')||'pulse');
+if(!TABS.some(x=>x.k===TAB)) TAB='pulse';
+let briefCat=null, pulseDays=90;
+
+function renderTabs(){
+  $('tabs').innerHTML=TABS.map(x=>
+    `<button class="tab" aria-selected="${x.k===TAB}" onclick="go('${x.k}')">${x.t}</button>`).join('');
+  $('page-title').textContent=TABS.find(x=>x.k===TAB).t.replace(/^\S+\s/,'');
+  document.title=TABS.find(x=>x.k===TAB).t.replace(/^\S+\s/,'')+' — Транскрайбер';
+}
+function go(tab){TAB=tab;history.replaceState(null,'','/'+tab);renderTabs();load()}
+
+async function load(){
+  $('app').innerHTML='<div class="empty">Загружаю…</div>';
+  try{
+    if(TAB==='brief') await loadBrief();
+    else if(TAB==='schedule') await loadSchedule();
+    else await loadPulse();
+  }catch(e){$('app').innerHTML=`<div class="box r">Ошибка: ${esc(e.message)}</div>`}
+}
+
+/* ═══ БРИФИНГ ═══ */
+let BRIEF=null;
+async function loadBrief(){
+  const q=briefCat?('?category='+encodeURIComponent(briefCat)):'';
+  const r=await fetch('/api/brief'+q); BRIEF=await r.json();
+  if(!BRIEF.series||!BRIEF.series.length){
+    $('app').innerHTML='<div class="card"><div class="empty">📭<b>Нет встреч с датами</b>Обработайте планёрку — брифинг соберётся сам</div></div>';return;
+  }
+  briefCat=BRIEF.category;
+  const m=BRIEF.last, ex=BRIEF.extras||{};
+  let html=`<div class="chipbar">${BRIEF.series.map(s=>
+    `<button class="chip" aria-pressed="${s.series===briefCat}"
+      onclick="briefCat='${esc(s.series)}';loadBrief()">${esc(s.series)} <b>${s.n}</b></button>`).join('')}</div>`;
+  if(!m){html+='<div class="empty">В этой серии пока пусто</div>';$('app').innerHTML=html;return}
+  html+=`<div class="cols"><div>
+    <div class="card"><h2>О чём была прошлая встреча
+        <span class="n">${fd(m.date)} · ${daysAgo(m.date)}</span></h2>
+      <b style="font-size:15px">${esc(m.title)}</b>
+      <div class="sum" style="margin-top:8px">${esc(ex.summary||'Summary не найден')}</div>
+      <div style="margin-top:10px"><button class="btn" onclick="copyBrief()">📋 Скопировать брифинг</button></div>
+    </div>
+    ${ex.decisions&&ex.decisions.length?`<div class="card"><h2>Что решили <span class="n">${ex.decisions.length}</span></h2>
+      ${ex.decisions.map(d=>`<div class="li">${esc(d)}</div>`).join('')}</div>`:''}
+    ${ex.open_questions&&ex.open_questions.length?`<div class="card"><h2>Осталось нерешённым</h2>
+      ${ex.open_questions.map(q=>`<div class="box w">❓ ${esc(q)}</div>`).join('')}</div>`:''}
+    <div class="card"><h2>Не ушло в Trello <span class="n">${(BRIEF.open_tasks||[]).length}</span></h2>
+      ${(BRIEF.open_tasks||[]).length?BRIEF.open_tasks.map(t=>`<div class="li"><b>${esc(t.text)}</b>
+        <div class="tc">${esc(t.owner||'не назначен')} · из планёрки ${fd(t.m_date)}${t.section?' · '+esc(t.section):''}</div></div>`).join('')
+        :'<div class="empty">👌<b>Всё разобрано</b>Непринятых задач в серии нет</div>'}
+      <p class="muted" style="font-size:12.5px;margin-top:8px">Это предложения из приёмки. Принятые живут в Trello.</p>
+    </div>
+  </div><div>
+    ${ex.blockers&&ex.blockers.length?`<div class="card"><h2>Блокеры</h2>
+      ${ex.blockers.map(b=>`<div class="box r">⛔ ${esc(b)}</div>`).join('')}</div>`:''}
+    ${ex.risks&&ex.risks.length?`<div class="card"><h2>Риски</h2>
+      ${ex.risks.map(b=>`<div class="box w">⚠️ ${esc(b)}</div>`).join('')}</div>`:''}
+    <div class="card"><h2>Последние встречи серии</h2>
+      ${(BRIEF.recent||[]).map(x=>`<div class="mcard">
+        <span class="tc">${fd(x.date)} · ${daysAgo(x.date)}</span><b>${esc(x.title)}</b>
+        <span class="tc">задач ${x.n_actions||0} · решений ${x.n_decisions||0}</span></div>`).join('')}</div>
+  </div></div>`;
+  $('app').innerHTML=html;
+}
+function daysAgo(iso){if(!iso)return '';
+  const d=Math.round((Date.now()-new Date(iso+'T00:00:00'))/864e5);
+  return d<=0?'сегодня':d+' дн. назад'}
+function copyBrief(){
+  const m=BRIEF.last, ex=BRIEF.extras||{};
+  const txt=[`БРИФИНГ · ${BRIEF.category}`,
+    `Прошлая встреча ${fd(m.date)}: ${m.title}`,'',
+    (ex.summary||'').slice(0,600),'',
+    'Решения:',...(ex.decisions||[]).map(d=>'• '+d),'',
+    'Не решено:',...(ex.open_questions||[]).map(q=>'• '+q),'',
+    'Не ушло в Trello:',...(BRIEF.open_tasks||[]).slice(0,8).map(t=>`• ${t.text} (${t.owner||'не назначен'})`)
+  ].join('\n');
+  navigator.clipboard.writeText(txt).then(()=>toast('Брифинг скопирован — можно кинуть в чат'))
+    .catch(()=>toast('Не удалось скопировать'));
+}
+
+/* ═══ РАСПИСАНИЕ ═══ */
+async function loadSchedule(){
+  const r=await fetch('/api/schedule'); const j=await r.json();
+  const series=j.series||[];
+  if(!series.length){$('app').innerHTML='<div class="card"><div class="empty">📭<b>Пока пусто</b></div></div>';return}
+  $('app').innerHTML='<p class="muted" style="margin-bottom:12px">Ритм посчитан по реальным записям, не по намерениям.</p>'
+    +series.map(s=>`<div class="card">
+    <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">
+      <div><b style="font-size:15px">${esc(s.series)}</b>
+        <div class="muted" style="font-size:12.5px">${s.n} планёрок · ${s.per_week} в неделю ·
+          последняя ${fd(s.last_date)} (${s.days_since} дн. назад)</div></div>
+      <button class="btn" onclick="briefCat='${esc(s.series)}';go('brief')">Брифинг →</button>
+    </div>
+    <div class="chipbar" style="margin:10px 0 0">
+      ${s.days_since>14?`<span class="chip r static">🔇 не собирались ${s.days_since} дн.</span>`
+        :`<span class="chip g static">ритм в норме</span>`}
+      <span class="chip static">задач ${s.n_actions}</span>
+      <span class="chip static">решений ${s.n_decisions}</span>
+    </div></div>`).join('');
+}
+
+/* ═══ ПУЛЬС ═══ */
+let PULSE=null;
+function spark(v){
+  const w=300,h=56,mx=Math.max(...v,1);
+  const p=v.map((x,i)=>[8+i/(Math.max(1,v.length-1))*(w-16),h-8-(x/mx)*(h-20)]);
+  const d=p.map((q,i)=>(i?'L':'M')+q[0].toFixed(1)+' '+q[1].toFixed(1)).join(' ');
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+    <defs><linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4f46e5" stop-opacity=".3"/>
+      <stop offset="1" stop-color="#4f46e5" stop-opacity="0"/></linearGradient></defs>
+    <path d="${d} L${w-8} ${h} L8 ${h} Z" fill="url(#g1)"/>
+    <path d="${d}" fill="none" stroke="#4f46e5" stroke-width="2.4"/>
+    ${p.map(q=>`<circle cx="${q[0].toFixed(1)}" cy="${q[1].toFixed(1)}" r="2.8" fill="#fff" stroke="#4f46e5" stroke-width="2"/>`).join('')}</svg>`;
+}
+async function loadPulse(){
+  const r=await fetch('/api/pulse?days='+pulseDays); PULSE=await r.json();
+  const P=PULSE;
+  const noPct=P.n_tasks?Math.round(P.no_owner/P.n_tasks*100):0;
+  const mxo=Math.max(...(P.by_owner||[]).map(x=>x[1]),1);
+  const mxs=Math.max(...(P.by_section||[]).map(x=>x[1]),1);
+  let html=`<div class="chipbar">
+    ${[30,90,180].map(d=>`<button class="chip" aria-pressed="${d===pulseDays}"
+      onclick="pulseDays=${d};loadPulse()">${d} дней</button>`).join('')}
+    <span style="flex:1"></span>
+    <button class="btn" onclick="copyPulse()">📋 Скопировать пульс</button>
+  </div>
+  <div class="kpis">
+    <div class="kpi"><div class="l">Планёрок</div><div class="v">${P.n_meetings}</div><div class="s">за ${P.days} дней</div></div>
+    <div class="kpi"><div class="l">Задач извлечено</div><div class="v">${P.n_actions}</div>
+      <div class="s">${P.n_meetings?(P.n_actions/P.n_meetings).toFixed(1):'0'} на встречу</div></div>
+    <div class="kpi"><div class="l">Решений</div><div class="v">${P.n_decisions}</div>
+      <div class="s">${P.n_meetings?(P.n_decisions/P.n_meetings).toFixed(1):'0'} на встречу</div></div>
+    <div class="kpi ${noPct>30?'bad':''}"><div class="l">Без исполнителя</div><div class="v">${noPct}%</div>
+      <div class="s">${P.no_owner} из ${P.n_tasks} задач</div></div>
+  </div>`;
+  if(noPct>30) html+=`<div class="box r"><b>Вердикт.</b> У ${noPct}% задач исполнитель не распознан —
+    это неразобранные голоса. Пока имена не проставлены в приёмке, «кто что должен» посчитать нельзя.</div>`;
+  html+=`<div class="cols"><div>
+    <div class="card"><h2>Темы на дистанции</h2>
+      ${(P.by_section||[]).length?(P.by_section||[]).map(([s,n])=>`<div class="hbar">
+        <div class="hl"><span>${esc(s)}</span><b>${n} задач</b></div>
+        <div class="track"><i style="width:${n/mxs*100}%"></i></div></div>`).join('')
+        :'<div class="empty">Разделы появятся после обработки планёрок новым пайплайном</div>'}
+      <p class="muted" style="font-size:12.5px;margin-top:8px">Разделы, к которым модель отнесла задачи. Руками ничего не размечали.</p>
+    </div>
+    <div class="card"><h2>Ритм · планёрок в неделю</h2>${spark(P.weeks||[])}
+      <div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--faint)">
+        <span>12 недель назад</span><span>эта неделя: <b>${(P.weeks||[]).slice(-1)[0]||0}</b></span></div></div>
+    <div class="card"><h2>Сроки: первый против текущего</h2>
+      <p class="muted" style="font-size:12.5px;margin-bottom:10px">Первый срок — из журнала отправки, его никто не переписывал.
+        Текущий читается с доски разово, по кнопке. Это сверка, не синхронизация.</p>
+      <button class="btn p" id="cmp-btn" onclick="compare()"
+        ${P.trello_ready?'':'disabled title="Trello не настроен"'}>↔ Сверить с Trello</button>
+      <div id="cmp-out" style="margin-top:10px"></div>
+    </div>
+  </div><div>
+    <div class="card"><h2>Кто берёт задачи</h2>
+      ${(P.by_owner||[]).length?(P.by_owner||[]).map(([w,n])=>`<div class="hbar">
+        <div class="hl"><span>${esc(w)}</span><b>${n}</b></div>
+        <div class="track"><i style="width:${n/mxo*100}%"></i></div></div>`).join('')
+        :'<div class="empty">Пока некому — исполнители не распознаны</div>'}
+      <p class="muted" style="font-size:12.5px">Сколько повесили, а не сколько сделали. Закрытие живёт в Trello.</p>
+    </div>
+    ${(P.silent||[]).length?`<div class="card"><h2>Тишина</h2>
+      ${P.silent.map(x=>`<div class="li"><b>${esc(x.series)}</b>
+        <div class="tc">не собирались ${x.days_since} дн.</div></div>`).join('')}</div>`:''}
+    <div class="card"><h2>Журнал отправки</h2>
+      ${(P.journal||[]).length?P.journal.map(j=>`<div class="li"><b>${esc(j.text)}</b>
+        <div class="tc">${esc(j.owner||'—')} · первый срок ${fd(j.due_v1)}${j.mirrored?' · 📨':''}</div></div>`).join('')
+        :'<div class="empty">📭<b>Пока пусто</b>Отправьте задачи из приёмки</div>'}
+      <p class="muted" style="font-size:12.5px;margin-top:8px">Первый срок хранится тут и в зеркале Telegram. В Trello его нет.</p>
+    </div>
+  </div></div>`;
+  $('app').innerHTML=html;
+}
+async function compare(){
+  const btn=$('cmp-btn'); btn.disabled=true; btn.textContent='Читаю доску…';
+  const r=await fetch('/api/pulse/compare',{method:'POST'});
+  const j=await r.json();
+  btn.disabled=false; btn.textContent='↔ Сверить с Trello';
+  if(!r.ok||!j.ok){toast(j.error||'Ошибка сверки');return}
+  const rows=j.rows||[];
+  if(!rows.length){$('cmp-out').innerHTML='<div class="empty">Журнал пуст — сверять нечего</div>';return}
+  const moved=rows.filter(x=>x.moved_days>0&&!x.closed);
+  $('cmp-out').innerHTML=`<div class="wrap-x"><table class="cmp">
+    <tr><th>Задача</th><th>Первый</th><th>Текущий</th><th>Сдвиг</th></tr>
+    ${rows.map(x=>`<tr>
+      <td>${esc(x.text)}${x.closed?' <span class="chip g static" style="font-size:10px">закрыта</span>':''}
+        ${x.missing?' <span class="chip r static" style="font-size:10px">карточка удалена</span>':''}</td>
+      <td class="tc">${fd(x.due_v1)}</td>
+      <td class="tc">${x.current_due?fd(x.current_due):'—'}</td>
+      <td>${x.moved_days>0?`<b style="color:var(--red)">+${x.moved_days} дн.</b>`
+        :(x.moved_days<0?`<b style="color:var(--green)">${x.moved_days} дн.</b>`:'в сроке')}</td>
+    </tr>`).join('')}
+  </table></div>
+  <p class="muted" style="font-size:12.5px;margin-top:8px">${moved.length
+    ?`Сроки уехали у ${moved.length} из ${rows.length}.`
+    :'Переносов нет — либо всё по плану, либо сроки не двигают на доске.'}</p>`;
+}
+function copyPulse(){
+  const P=PULSE; if(!P)return;
+  const noPct=P.n_tasks?Math.round(P.no_owner/P.n_tasks*100):0;
+  const txt=[`ПУЛЬС за ${P.days} дней`,
+    `Планёрок ${P.n_meetings} · задач ${P.n_actions} · решений ${P.n_decisions} · без исполнителя ${noPct}%`,
+    '', 'Темы: '+(P.by_section||[]).map(([s,n])=>`${s} ${n}`).join(' · '),
+    'Берут задачи: '+(P.by_owner||[]).map(([w,n])=>`${w} ${n}`).join(' · '),
+    ...(P.silent||[]).map(x=>`🔇 ${x.series}: не собирались ${x.days_since} дн.`),
+  ].join('\n');
+  navigator.clipboard.writeText(txt).then(()=>toast('Пульс скопирован'))
+    .catch(()=>toast('Не удалось скопировать'));
+}
+
+renderTabs();
+load();
+</script>
+</body>
+</html>

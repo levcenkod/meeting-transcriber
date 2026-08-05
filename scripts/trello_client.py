@@ -152,3 +152,17 @@ def create_card(*, name: str, desc: str, due: str | None = None,
     if not isinstance(card, dict) or not card.get("id"):
         raise TrelloError(f"Неожиданный ответ Trello: {str(card)[:200]}")
     return card
+
+
+def get_card(card_id: str) -> dict | None:
+    """Разовое чтение карточки для сверки «первый срок против текущего».
+
+    Это НЕ синхронизация (ADR-001): вызывается только кнопкой на Пульсе.
+    Удалённая/недоступная карточка → None.
+    """
+    try:
+        card = _call("GET", f"/cards/{card_id}",
+                     {"fields": "name,due,dueComplete,closed,shortUrl"})
+        return card if isinstance(card, dict) else None
+    except TrelloError:
+        return None

@@ -165,6 +165,42 @@ class TestStateFlow(unittest.TestCase):
                       if p["text"] == "Проверить провайдера"]
             self.assertEqual(owners, ["Никита"])
 
+    def test_pulse_and_series(self):
+        import datetime
+        d = self.db
+        today = datetime.date.today()
+        d1 = (today - datetime.timedelta(days=2)).isoformat()
+        d2 = (today - datetime.timedelta(days=9)).isoformat()
+        d3 = (today - datetime.timedelta(days=30)).isoformat()
+        with d.get_db() as con:
+            for i, (dt_, cat) in enumerate([(d1, "Ежедневки"), (d2, "Ежедневки"),
+                                            (d3, "Контент")]):
+                mid = d.upsert_meeting(con, f"{cat}/Общее", f"m{i}",
+                                       {"title": f"Встреча {i}", "date": dt_,
+                                        "category": cat})
+                con.execute("UPDATE meeting SET n_actions=5, n_decisions=2 "
+                            "WHERE id=?", (mid,))
+                d.sync_proposals(con, mid, [
+                    {"task": f"Задача {i}", "owner": "Денис",
+                     "confidence": "high", "kind": "task", "section": "CRM"},
+                    {"task": f"Мелочь {i}", "owner": None, "kind": "minor"}])
+            series = d.series_stats(con)
+            self.assertEqual({s["series"] for s in series},
+                             {"Ежедневки", "Контент"})
+            silent = [s for s in series if s["days_since"] > 14]
+            self.assertEqual([s["series"] for s in silent], ["Контент"])
+
+            pulse = d.pulse_summary(con, days=90)
+            self.assertEqual(pulse["n_meetings"], 3)
+            self.assertEqual(pulse["n_actions"], 15)
+            self.assertEqual(pulse["by_owner"][0][0], "Денис")
+            self.assertEqual(pulse["by_section"][0], ("CRM", 3))
+            self.assertEqual(sum(pulse["weeks"]), 3)
+
+            open_tasks = d.open_tasks_for_series(con, "Ежедневки")
+            self.assertEqual(len(open_tasks), 2)
+            self.assertTrue(all(t["kind"] == "task" for t in open_tasks))
+
 
 if __name__ == "__main__":
     unittest.main()
