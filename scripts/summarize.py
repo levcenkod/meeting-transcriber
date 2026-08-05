@@ -43,6 +43,21 @@ try:
 except ImportError:
     _ANON_AVAILABLE = False
 
+try:
+    from meeting_date import resolve_meeting_date as _resolve_meeting_date
+except ImportError:
+    _resolve_meeting_date = None
+
+try:
+    from evidence import verify_item as _verify_item, unresolved_tokens as _unresolved_tokens
+except ImportError:
+    _verify_item = _unresolved_tokens = None
+
+try:
+    from people import load_people as _load_people, normalize_owner as _normalize_owner
+except ImportError:
+    _load_people = _normalize_owner = None
+
 # ─── Config ───────────────────────────────────────────────────────────────────
 
 CHUNK_SIZE_CHARS    = int(os.environ.get("CHUNK_SIZE_CHARS",    "12000"))
@@ -502,10 +517,9 @@ def extract_chunk(
             "mentioned_topics": [], "_parse_error": True,
         }
 
-    # ── LOCAL DE-ANONYMIZATION of LLM response ────────────────────────────────
-    if anonymizer is not None:
-        result = anonymizer.deanonymize_any(result)
-
+    # Деанонимизация здесь НЕ делается: результаты чанков идут дальше
+    # в REDUCE и TITLE (это тоже вызовы модели), поэтому весь конвейер
+    # живёт в токенах до конца. Правило: наружу — только токены.
     result["chunk_id"] = chunk_id
     result.setdefault("time_range", {"start": time_start, "end": time_end})
     return result
@@ -1208,6 +1222,63 @@ def generate_meeting_title(client: "OpenAI", model: str, merged: dict, summary_m
         return "Совещание"
 
 
+def enrich_with_evidence(merged: dict, transcript: str, wx_json_path: Path,
+                         anonymizer=None) -> dict:
+    """Верификация цитат и таймкоды кодом + правило «задача/мелочь».
+
+    - quote_verified: цитата найдена в транскрипте якорным поиском
+      (нормализация + окно ≥4 слов — точный substring терял ~24 % верных пунктов)
+    - t_sec: из пословных таймингов WhisperX, иначе из заголовков блоков;
+      source_time модели остаётся как подсказка, но не используется
+    - owner: падежи сведены к реестру людей; выдуманные моделью токены
+      анонимизации (PERSON_014 вне карты) → null с пометкой
+    - kind: task | minor — «нет исполнителя ИЛИ уверенность не high → мелочь»
+    """
+    if _verify_item is None:
+        return merged
+    people = _load_people() if _load_people else []
+    known_tokens = set(anonymizer.map.keys()) if anonymizer is not None else set()
+    v_ok = v_total = t_count = 0
+
+    for item in merged.get("action_items", []):
+        quote = (item.get("evidence") or item.get("quote") or "").strip()
+        verified, t = False, None
+        if quote:
+            v_total += 1
+            verified, t = _verify_item(quote, transcript, wx_json_path)
+            v_ok += bool(verified)
+        item["quote_verified"] = bool(verified)
+        if t is not None:
+            item["t_sec"] = t
+            t_count += 1
+
+        if _normalize_owner is not None:
+            owner, matched = _normalize_owner(item.get("owner"), people)
+            if owner and _unresolved_tokens and _unresolved_tokens(owner, known_tokens):
+                item["owner_note"] = f"модель вернула несуществующий токен: {owner}"
+                owner, matched = None, False
+            item["owner"] = owner
+            item["owner_matched"] = bool(matched)
+
+        conf = (item.get("confidence") or "").lower()
+        item["kind"] = "task" if (item.get("owner") and conf == "high") else "minor"
+
+    for d in merged.get("decisions", []):
+        if isinstance(d, dict):
+            quote = (d.get("quote") or d.get("evidence") or "").strip()
+            if quote:
+                verified, t = _verify_item(quote, transcript, wx_json_path)
+                d["quote_verified"] = bool(verified)
+                if t is not None:
+                    d["t_sec"] = t
+
+    kinds = [i.get("kind") for i in merged.get("action_items", [])]
+    print(f"[INFO] Evidence: цитаты подтверждены {v_ok}/{v_total}, "
+          f"таймкоды вычислены {t_count}, задач {kinds.count('task')}, "
+          f"мелочей {kinds.count('minor')}")
+    return merged
+
+
 # ─── Main pipeline ────────────────────────────────────────────────────────────
 
 def summarize(speakers_file: Path) -> None:
@@ -1295,9 +1366,11 @@ def summarize(speakers_file: Path) -> None:
         )
 
     # ── COMBINED ANONYMIZED TRANSCRIPT (when anon is enabled) ─────────────────
+    # Этот же текст уходит в REDUCE вместо реального транскрипта.
+    transcript_for_llm = transcript
     if anonymizer is not None:
-        full_text = speakers_file.read_text(encoding="utf-8")
-        combined_anon = anonymizer.anonymize(full_text)
+        combined_anon = anonymizer.anonymize(transcript)
+        transcript_for_llm = combined_anon
         anon_combined_path = output_dir / f"{stem}_anonymized_speakers.txt"
         anon_combined_path.write_text(combined_anon, encoding="utf-8")
         print(f"[INFO] Anonymized transcript saved: {anon_combined_path.name}")
@@ -1316,8 +1389,35 @@ def summarize(speakers_file: Path) -> None:
     # ── EVIDENCE CHECK ────────────────────────────────────────────────────────
     merged = evidence_check(merged)
 
+    # ── REDUCE: final summary ─────────────────────────────────────────────────
+    # Всё ещё в токенах: merged и транскрипт для модели анонимизированы.
+    print("[INFO] Generating final summary (REDUCE)...")
+    summary_md = generate_final_summary(client, model, merged,
+                                        transcript=transcript_for_llm)
+    # Strip potential thinking blocks from summary too
+    summary_md = re.sub(r"<think>[\s\S]*?</think>", "", summary_md).strip()
+
+    # ── TITLE: ask LLM for a short meeting title (тоже в токенах) ─────────────
+    print("[INFO] Generating meeting title...")
+    title = generate_meeting_title(client, model, merged, summary_md)
+
+    # ── ДЕАНОНИМИЗАЦИЯ — строго после ВСЕХ вызовов модели ────────────────────
+    # Правило «наружу только токены» раньше нарушалось: REDUCE и TITLE
+    # улетали в облако с реальными именами.
+    if anonymizer is not None:
+        merged     = anonymizer.deanonymize_any(merged)
+        summary_md = anonymizer.deanonymize_text(summary_md)
+        title      = anonymizer.deanonymize_text(title)
+    print(f"[OK]   Title: {title}")
+
+    # ── EVIDENCE VERIFY: цитаты и таймкоды кодом, задача/мелочь ──────────────
+    # После деанонимизации: цитаты сверяются с реальным транскриптом.
+    merged = enrich_with_evidence(
+        merged, transcript, output_dir / f"{stem}.json", anonymizer)
+
     # Metadata
     merged["meeting_id"]      = stem
+    merged["extractor_model"] = model
     merged["total_chunks"]    = len(chunks)
     merged["speaker_blocks"]  = len(blocks)
 
@@ -1329,7 +1429,8 @@ def summarize(speakers_file: Path) -> None:
     print(f"[OK]   {analysis_path.name}")
 
     # ── Save *_actions.json ───────────────────────────────────────────────────
-    actions = [{**a, "status": "open"} for a in merged.get("action_items", [])]
+    actions = [{**a, "status": "open", "extractor": model}
+               for a in merged.get("action_items", [])]
     actions_path = output_dir / f"{stem}_actions.json"
     actions_path.write_text(
         json.dumps(actions, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -1344,24 +1445,51 @@ def summarize(speakers_file: Path) -> None:
     )
     print(f"[OK]   {decisions_path.name}")
 
-    # ── REDUCE: final summary ─────────────────────────────────────────────────
-    print("[INFO] Generating final summary (REDUCE)...")
-    summary_md = generate_final_summary(client, model, merged, transcript=transcript)
-    # Strip potential thinking blocks from summary too
-    summary_md = re.sub(r"<think>[\s\S]*?</think>", "", summary_md).strip()
-
-    # ── TITLE: ask LLM for a short meeting title ──────────────────────────────
-    print("[INFO] Generating meeting title...")
-    title = generate_meeting_title(client, model, merged, summary_md)
-    print(f"[OK]   Title: {title}")
-
     # ── Collect attendees (unique speakers) ───────────────────────────────────
     attendees = sorted({b.speaker for b in blocks if b.speaker})
 
-    # ── Build Obsidian-friendly frontmatter ───────────────────────────────────
+    # ── Настоящая дата встречи (не дата обработки) ────────────────────────────
+    # Приоритет: явная дата (форма загрузки → env MEETING_DATE) > дата из meta
+    # прошлой обработки (переобработка дату не трогает) > имя файла > сегодня.
     from datetime import date as _date
-    meeting_date = _date.today().isoformat()
-    category     = output_dir.name
+
+    meta_path = output_dir / f"{stem}_meta.json"
+    existing_meta: dict = {}
+    if meta_path.exists():
+        try:
+            existing_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if not isinstance(existing_meta, dict):
+                existing_meta = {}
+        except Exception:
+            existing_meta = {}
+
+    meeting_date, date_source = (None, "none")
+    if _resolve_meeting_date is not None:
+        meeting_date, date_source = _resolve_meeting_date(
+            explicit=os.environ.get("MEETING_DATE"))
+    if not meeting_date and existing_meta.get("date"):
+        meeting_date = existing_meta["date"]
+        date_source  = existing_meta.get("date_source", "meta")
+    if not meeting_date and _resolve_meeting_date is not None:
+        meeting_date, date_source = _resolve_meeting_date(filename=stem)
+    if not meeting_date:
+        meeting_date = _date.today().isoformat()
+        date_source  = "processing_day"
+        print("[WARN] Дата встречи не определена (ни поля формы, ни даты в имени "
+              "файла) — записана дата обработки. Поправьте дату в приёмке.")
+    print(f"[INFO] Дата встречи: {meeting_date} (источник: {date_source})")
+
+    # Категория/подкатегория: из OUTPUT_SUBDIR (веб/воронка) или из пути.
+    out_subdir = (os.environ.get("OUTPUT_SUBDIR") or "").strip().strip("/")
+    if out_subdir:
+        _parts = [p for p in out_subdir.split("/") if p]
+    else:
+        try:
+            _parts = list(output_dir.resolve().relative_to(Path("/output").resolve()).parts)
+        except Exception:
+            _parts = [output_dir.name]
+    category    = _parts[0] if _parts else output_dir.name
+    subcategory = _parts[1] if len(_parts) > 1 else ""
 
     def _yaml_list(items: list[str]) -> str:
         if not items:
@@ -1387,14 +1515,18 @@ def summarize(speakers_file: Path) -> None:
     print(f"[OK]   {summary_path.name}")
 
     # ── Save meta.json for the web UI / archive ───────────────────────────────
+    # Merge поверх существующей меты: ключи, добавленные снаружи (audio, …),
+    # и однажды определённая дата переживают переобработку.
     meta = {
-        "title":     title,
-        "date":      meeting_date,
-        "category":  category,
-        "attendees": attendees,
-        "stem":      stem,
+        **existing_meta,
+        "title":       title,
+        "date":        meeting_date,
+        "date_source": date_source,
+        "category":    category,
+        "subcategory": subcategory,
+        "attendees":   attendees,
+        "stem":        stem,
     }
-    meta_path = output_dir / f"{stem}_meta.json"
     meta_path.write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
     )

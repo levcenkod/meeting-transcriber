@@ -86,6 +86,16 @@ _SKIP_WORDS: frozenset[str] = frozenset({
     "ok", "yes", "no", "да", "нет", "ок", "info", "error", "warn",
 })
 
+# Таймкоды анонимизировать запрещено: NER принимает "00:05:55 - 00:06:05"
+# за название организации, после чего ломаются заголовки блоков транскрипта
+# и «клик в источник». Любой спан, пересекающийся с таймкодом, пропускается.
+_TIMECODE_RE = re.compile(
+    r"\[?\d{1,2}:\d{2}(?::\d{2})?(?:\s*-\s*\d{1,2}:\d{2}(?::\d{2})?)?\]?")
+
+# Токены, которые могли остаться после деанонимизации (модель их выдумала)
+_LEFTOVER_TOKEN_RE = re.compile(
+    r"\b(?:PERSON|COMPANY|LOCATION|EMAIL|PHONE|URL|DOMAIN|TRANSACTION)_\d{3}\b")
+
 # Preferred spaCy models per language (tried in order)
 _SPACY_MODELS: dict[str, list[str]] = {
     "ru": ["ru_core_news_md", "ru_core_news_sm", "xx_ent_wiki_sm"],
@@ -200,8 +210,13 @@ class Anonymizer:
         replacements: list[tuple[int, int, str]] = []
         covered: set[tuple[int, int]] = set()
 
+        # Таймкоды и заголовки блоков — неприкасаемы (см. _TIMECODE_RE)
+        protected = [(m.start(), m.end()) for m in _TIMECODE_RE.finditer(text)]
+
         def _add(start: int, end: int, etype: str, value: str) -> None:
             if any(s < end and start < e for s, e in covered):
+                return
+            if any(s < end and start < e for s, e in protected):
                 return
             token = self._get_token(etype, value)
             replacements.append((start, end, token))
@@ -242,13 +257,21 @@ class Anonymizer:
         return "".join(chars)
 
     def deanonymize_text(self, text: str) -> str:
-        """Replace all tokens in text with original values."""
+        """Replace all tokens in text with original values.
+
+        Токены, которых нет в карте (модель их выдумала), молча не оставляем:
+        пишем warning — дальше по пайплайну такие значения обнуляются.
+        """
         if not self._map:
             return text
         # Longest tokens first to avoid partial replacements
         for token, real in sorted(self._map.items(),
                                   key=lambda x: len(x[0]), reverse=True):
             text = text.replace(token, real)
+        leftover = sorted(set(_LEFTOVER_TOKEN_RE.findall(text)))
+        if leftover:
+            print(f"[ANON][WARN] Модель вернула токены вне карты: "
+                  f"{', '.join(leftover)}", file=sys.stderr)
         return text
 
     def deanonymize_any(self, obj: Any) -> Any:
