@@ -778,6 +778,9 @@
     </div>
   </div>
   <div class="header-actions">
+    <a class="archive-btn" href="/inbox" title="Приёмка задач: правка, сроки, отправка в Trello" style="text-decoration:none;">
+      📥 <span>Приёмка</span>
+    </a>
     <button class="archive-btn" id="archive-btn" title="Прошлые планёрки">
       📚 <span>Архив</span>
     </button>
@@ -850,6 +853,11 @@
           <option value="es">Español</option>
           <option value="zh">中文</option>
         </select>
+      </div>
+      <div class="field">
+        <label for="meeting-date">Дата планёрки</label>
+        <input type="date" id="meeting-date">
+        <p class="dz-sub" id="meeting-date-hint" style="margin-top:4px;"></p>
       </div>
       <div class="field toggle-row">
         <label class="toggle">
@@ -1092,11 +1100,45 @@ subcatAddBtn.addEventListener('click', async () => {
 
 loadCategories();
 
+// ── Дата планёрки: из имени файла, иначе из даты изменения файла ─────────────
+function toISODate(d) {
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+function isoIfValid(y, mo, d) {
+  const dt = new Date(y, mo - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null;
+  if (y < 2020 || dt.getTime() > Date.now() + 2 * 864e5) return null;
+  return toISODate(dt);
+}
+function parseDateFromName(name) {
+  let m = name.match(/(?<!\d)(20\d{2})[-_.](\d{1,2})[-_.](\d{1,2})(?!\d)/);
+  if (m) return isoIfValid(+m[1], +m[2], +m[3]);
+  m = name.match(/(?<!\d)(\d{1,2})[-_.](\d{1,2})[-_.](20\d{2})(?!\d)/);
+  if (m) return isoIfValid(+m[3], +m[2], +m[1]);
+  m = name.match(/(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)/);
+  if (m) return isoIfValid(+m[1], +m[2], +m[3]);
+  return null;
+}
+function prefillMeetingDate(file) {
+  const input = document.getElementById('meeting-date');
+  const hint  = document.getElementById('meeting-date-hint');
+  if (!input) return;
+  const fromName = parseDateFromName(file.name);
+  const fromMtime = file.lastModified ? toISODate(new Date(file.lastModified)) : '';
+  input.value = fromName || fromMtime || '';
+  if (hint) {
+    hint.textContent = fromName ? '✓ из имени файла'
+      : (fromMtime ? '⚠ по дате изменения файла — проверьте' : 'укажите дату вручную');
+  }
+}
+
 function setFile(file) {
   selectedFile = file;
   badgeName.textContent = file.name;
   badgeSize.textContent = formatBytes(file.size);
   fileBadge.classList.add('show');
+  prefillMeetingDate(file);
 
   const ext = (file.name.split('.').pop() || '').toLowerCase();
   if (ext === 'json') {
@@ -1145,6 +1187,7 @@ startBtn.addEventListener('click', async () => {
   fd.append('subcategory', subcatSelect.value);
   fd.append('language',    langSelect.value);
   fd.append('llm_enabled', llmToggle.checked ? 'true' : 'false');
+  fd.append('meeting_date', (document.getElementById('meeting-date') || {}).value || '');
 
   startBtn.disabled = true;
   startBtn.textContent = 'Загрузка файла...';
@@ -1611,14 +1654,18 @@ function renderArchive(data, jobs = []) {
   for (const cat of names) {
     html += `<div class="archive-cat-title">${escapeHtml(cat)} · ${cats[cat].length}</div>`;
     for (const m of cats[cat]) {
-      const key = `${m.category}::${m.stem}`;
+      const dir = m.dir || m.category;
+      const key = `${dir}::${m.stem}`;
       const att = (m.attendees || []).filter(a => !a.startsWith('SPEAKER_'));
       const attStr = att.length ? att.slice(0, 4).join(', ') + (att.length > 4 ? ` +${att.length - 4}` : '') : '';
+      const dateWarn = (m.date_source === 'mtime' || m.date_source === 'processing_day');
       html += `
-        <div class="meeting-item" data-key="${escapeHtml(key)}" data-category="${escapeHtml(m.category)}" data-stem="${escapeHtml(m.stem)}">
+        <div class="meeting-item" data-key="${escapeHtml(key)}" data-dir="${escapeHtml(dir)}" data-stem="${escapeHtml(m.stem)}">
           <div class="meeting-title">${escapeHtml(m.title)}</div>
           <div class="meeting-meta">
-            ${m.date ? `<span>📅 ${escapeHtml(m.date)}</span>` : ''}
+            ${m.date ? `<span title="${dateWarn ? 'Дата определена косвенно — проверьте' : 'Дата планёрки'}">📅 ${escapeHtml(m.date)}${dateWarn ? ' ⚠' : ''}</span>` : ''}
+            ${m.subcategory ? `<span>🗂 ${escapeHtml(m.subcategory)}</span>` : ''}
+            ${m.audio ? '<span title="Есть запись">🎧</span>' : ''}
             ${attStr ? `<span>👥 ${escapeHtml(attStr)}</span>` : ''}
             <span>📁 ${escapeHtml(m.stem)}</span>
           </div>
@@ -1656,11 +1703,17 @@ function renderArchive(data, jobs = []) {
       detail.innerHTML = '<div style="color:var(--text-faint);font-size:0.85rem;">Загружаю…</div>';
       detail.style.display = 'block';
       try {
-        const url = `/meeting?category=${encodeURIComponent(el.dataset.category)}&stem=${encodeURIComponent(el.dataset.stem)}`;
+        const url = `/meeting?dir=${encodeURIComponent(el.dataset.dir)}&stem=${encodeURIComponent(el.dataset.stem)}`;
         const resp = await fetch(url);
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const md = await resp.json();
         let html = '';
+        // Запись встречи — плеер с перемоткой (отдача через /media с Range)
+        if (md.meta && md.meta.audio) {
+          const src = '/media/' + el.dataset.dir.split('/').map(encodeURIComponent).join('/')
+                    + '/' + encodeURIComponent(md.meta.audio);
+          html += `<audio controls preload="none" style="width:100%;margin-bottom:10px;" src="${src}"></audio>`;
+        }
         // Files
         if (md.primary?.length) {
           html += '<div style="margin-bottom:10px;">';

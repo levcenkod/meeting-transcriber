@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Приёмка — Транскрайбер</title>
+<style>
+:root{
+  --ink:#0d1117;--ink2:#243040;--muted:#5b6b7c;--faint:#8b98a8;
+  --line:rgba(16,40,60,.13);--hair:rgba(16,40,60,.07);--solid:#fff;
+  --glass:rgba(255,255,255,.8);--accent:#0e7490;--green:#059669;
+  --amber:#b45309;--red:#e11d48;--violet:#7c3aed;
+  --grad:linear-gradient(115deg,#4f46e5,#0891b2 55%,#06b6d4);
+  --r:16px;--sh:0 1px 2px rgba(13,17,23,.05),0 6px 18px rgba(13,17,23,.05);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;color:var(--ink);
+  font-size:14.5px;line-height:1.55;background:#eef3fa;padding-bottom:90px}
+body:before{content:"";position:fixed;inset:0;z-index:-1;background:
+  radial-gradient(820px 620px at 12% -10%,rgba(79,70,229,.15),transparent 58%),
+  radial-gradient(760px 560px at 92% 2%,rgba(6,182,212,.15),transparent 60%),
+  linear-gradient(160deg,#f7fbfe,#eef3fa 45%,#e8eef7)}
+.wrap{max-width:980px;margin:0 auto;padding:22px 16px}
+.top{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+.top h1{font-size:26px;font-weight:750;letter-spacing:-.03em;
+  background:linear-gradient(120deg,#0d1117 20%,#334155 60%,#0e7490);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.top .sub{color:var(--muted);font-size:13px}
+.top a.back{margin-left:auto;font-size:13px;color:var(--accent);text-decoration:none;
+  border:1px solid var(--line);border-radius:999px;padding:7px 14px;background:var(--solid)}
+.tabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+.tab{padding:8px 14px;border-radius:999px;border:1px solid var(--line);background:var(--solid);
+  font:inherit;font-size:12.5px;cursor:pointer;color:var(--muted)}
+.tab b{opacity:.6;font-weight:600}
+.tab[aria-selected="true"]{background:var(--grad);color:#fff;border-color:transparent}
+.card{background:var(--glass);border:1px solid var(--line);border-radius:var(--r);
+  padding:16px 18px;box-shadow:var(--sh);margin-bottom:14px}
+.card>h2{font-size:11px;letter-spacing:.13em;text-transform:uppercase;font-weight:750;
+  margin-bottom:12px;background:var(--grad);-webkit-background-clip:text;
+  background-clip:text;color:transparent}
+.card>h2 .n{color:var(--faint);-webkit-text-fill-color:var(--faint);font-weight:600}
+.box{border-radius:12px;padding:11px 14px;font-size:13.5px;margin-bottom:10px;line-height:1.5}
+.box.d{background:linear-gradient(120deg,rgba(79,70,229,.09),rgba(6,182,212,.07));
+  border:1px solid rgba(79,70,229,.18)}
+.box.g{background:rgba(5,150,105,.07);border:1px solid rgba(5,150,105,.2)}
+.box.r{background:rgba(225,29,72,.07);border:1px solid rgba(225,29,72,.2)}
+.prop{border:1px solid var(--line);border-radius:14px;padding:13px 15px;margin-bottom:10px;
+  background:var(--solid);transition:.15s}
+.prop.off{opacity:.45}
+.prop.sent{opacity:.6;border-color:rgba(5,150,105,.35)}
+.prop .q{font-size:12.5px;color:var(--faint);font-style:italic;margin-top:8px;
+  border-left:2px solid var(--line);padding-left:9px}
+.row{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+.inp{padding:8px 11px;border:1px solid var(--line);border-radius:10px;font:inherit;
+  font-size:13.5px;background:var(--solid);color:var(--ink)}
+.inp:focus{outline:2px solid rgba(79,70,229,.35);outline-offset:1px}
+.inp.full{width:100%}
+.inp.bad{border-color:rgba(225,29,72,.45)}
+.stb{padding:6px 11px;border-radius:999px;border:1px solid var(--line);background:var(--solid);
+  font:inherit;font-size:12px;color:var(--ink2);cursor:pointer}
+.stb:hover{border-color:rgba(79,70,229,.4)}
+.stb[aria-pressed="true"]{background:var(--grad);color:#fff;border-color:transparent}
+.stb.warn[aria-pressed="true"]{background:linear-gradient(120deg,#fb7185,#e11d48)}
+.btn{padding:10px 16px;border-radius:999px;border:1px solid var(--line);background:var(--solid);
+  font:inherit;font-size:13.5px;font-weight:600;color:var(--ink2);cursor:pointer;box-shadow:var(--sh)}
+.btn.p{background:var(--grad);color:#fff;border:0}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;
+  font-size:11.5px;font-weight:650;border:1px solid var(--line);color:var(--muted);background:var(--solid)}
+.chip.a{color:#0e7490;border-color:rgba(6,182,212,.3);background:rgba(6,182,212,.08);cursor:pointer}
+.chip.g{color:var(--green);border-color:rgba(5,150,105,.28);background:rgba(5,150,105,.08)}
+.chip.r{color:var(--red);border-color:rgba(225,29,72,.26);background:rgba(225,29,72,.07)}
+.chip.v{color:var(--violet);border-color:rgba(124,58,237,.26);background:rgba(124,58,237,.08)}
+.duelbl{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:700}
+.tc{font-variant-numeric:tabular-nums;color:var(--faint);font-size:12px}
+.muted{color:var(--muted)}
+.empty{text-align:center;padding:26px 16px;color:var(--faint)}
+.empty b{display:block;color:var(--ink2);font-size:15px;margin:6px 0 3px}
+.li{padding:7px 0 7px 16px;position:relative;font-size:13.5px;border-bottom:1px solid var(--hair)}
+.li:last-child{border-bottom:0}
+.li:before{content:"";position:absolute;left:2px;top:14px;width:6px;height:6px;
+  border-radius:50%;background:var(--accent);opacity:.55}
+.toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(20px);
+  background:rgba(13,17,23,.93);color:#fff;padding:11px 18px;border-radius:13px;
+  font-size:13.5px;opacity:0;transition:.25s;z-index:99;max-width:90vw;text-align:center;pointer-events:none}
+.toast.on{opacity:1;transform:translateX(-50%)}
+#player-bar{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.95);
+  border-top:1px solid var(--line);padding:8px 16px;display:none;z-index:50;
+  backdrop-filter:blur(10px)}
+#player-bar.on{display:flex;gap:12px;align-items:center}
+#player-bar audio{flex:1;height:36px}
+#player-bar .pl-close{border:0;background:none;font-size:16px;cursor:pointer;color:var(--muted)}
+select.inp{max-width:220px}
+input[type="date"].inp{max-width:160px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <h1>Приёмка</h1>
+    <span class="sub" id="head-sub">задачи из планёрок → человек → Trello</span>
+    <a class="back" href="/">← Транскрайбер</a>
+  </div>
+
+  <div class="tabs" id="tabs"></div>
+  <div id="app"><div class="empty">Загружаю…</div></div>
+</div>
+
+<div id="player-bar">
+  <audio id="player" controls preload="none"></audio>
+  <button class="pl-close" onclick="closePlayer()" title="Закрыть">✕</button>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let toastT;
+function toast(m){const t=$('toast');t.textContent=m;t.classList.add('on');
+  clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove('on'),2800)}
+const mmss=t=>t==null?'':Math.floor(t/60)+':'+String(t%60).padStart(2,'0');
+const fd=s=>{if(!s)return '—';const d=new Date(s+'T00:00:00');
+  return d.toLocaleDateString('ru-RU',{day:'numeric',month:'short'})};
+
+let MEETINGS=[], CUR=null, DATA=null;
+
+// ── Кнопки срока: считаются ОТ ДАТЫ ПЛАНЁРКИ, не от сегодня ─────────────────
+function dueOptions(meetingDate){
+  const base = meetingDate ? new Date(meetingDate+'T00:00:00') : new Date();
+  const iso = d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  const d1 = new Date(base); d1.setDate(d1.getDate()+1);
+  const w  = new Date(base); w.setDate(w.getDate()+(((5-w.getDay())+7)%7||7));
+  const m  = new Date(base.getFullYear(), base.getMonth()+1, 0);
+  return [
+    {k:iso(d1), t:'Сегодня-завтра'},
+    {k:iso(w),  t:'На этой неделе'},
+    {k:iso(m),  t:'До конца месяца'},
+  ];
+}
+function isPast(iso){return iso && iso < new Date().toISOString().slice(0,10)}
+
+// ── Загрузка ────────────────────────────────────────────────────────────────
+async function loadList(){
+  const r = await fetch('/api/inbox'); const j = await r.json();
+  MEETINGS = j.meetings||[];
+  renderTabs();
+  if(!MEETINGS.length){
+    $('app').innerHTML = '<div class="card"><div class="empty">📭<b>Пока пусто</b>'
+      +'Обработайте планёрку — предложенные задачи появятся здесь</div></div>';
+    return;
+  }
+  const want = new URLSearchParams(location.search).get('m');
+  const found = MEETINGS.find(x=>String(x.id)===want);
+  openMeeting((found||MEETINGS[0]).id);
+}
+function renderTabs(){
+  $('tabs').innerHTML = MEETINGS.slice(0,8).map(m=>
+    `<button class="tab" aria-selected="${CUR===m.id}" onclick="openMeeting(${m.id})">`
+    +`${fd(m.date)} · ${esc(m.title.length>34?m.title.slice(0,34)+'…':m.title)} `
+    +`<b>${m.n_pending||0}</b></button>`).join('');
+}
+async function openMeeting(id){
+  CUR=id; renderTabs();
+  history.replaceState(null,'','?m='+id);
+  $('app').innerHTML='<div class="empty">Загружаю…</div>';
+  const r = await fetch('/api/inbox/'+id);
+  if(!r.ok){$('app').innerHTML=`<div class="box r">Ошибка загрузки (${r.status})</div>`;return}
+  DATA = await r.json();
+  render();
+}
+
+// ── Правки ──────────────────────────────────────────────────────────────────
+async function patch(pid, obj){
+  const r = await fetch('/api/proposal/'+pid,{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify(obj)});
+  const j = await r.json();
+  if(!r.ok||!j.ok){toast(j.error||'Ошибка сохранения');return null}
+  const i = DATA.proposals.findIndex(p=>p.id===pid);
+  if(i>=0) DATA.proposals[i]=j.proposal;
+  return j.proposal;
+}
+async function setDue(pid,val){await patch(pid,{due:val});render()}
+async function setOwner(pid,val){
+  if(val==='__new'){
+    const name=prompt('Имя нового участника:');
+    if(name&&name.trim()){
+      await fetch('/api/people',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({name:name.trim()})});
+      const r=await fetch('/api/people');DATA.people=(await r.json()).people;
+      await patch(pid,{owner:name.trim()});
+    }
+  } else {
+    await patch(pid,{owner:val||null});
+  }
+  render();
+}
+async function reject(pid,undo){await patch(pid,{status:undo?'proposed':'rejected'});render()}
+async function promote(pid){await patch(pid,{kind:'task'});toast('Перенесено в задачи — поставьте срок и критерий');render()}
+async function demote(pid){await patch(pid,{kind:'minor',status:'proposed'});render()}
+let critT={};
+function critInput(pid,val){
+  clearTimeout(critT[pid]);
+  critT[pid]=setTimeout(()=>patch(pid,{criterion:val}),500);
+}
+let textT={};
+function textInput(pid,val){
+  clearTimeout(textT[pid]);
+  textT[pid]=setTimeout(()=>patch(pid,{text:val}),600);
+}
+
+// ── Имена спикеров (не блокирует приёмку) ───────────────────────────────────
+const spkPending={};
+async function applySpeakers(){
+  const mapping={};
+  for(const [k,v] of Object.entries(spkPending)) if(v) mapping[k]=v;
+  if(!Object.keys(mapping).length){toast('Выберите, кто есть кто');return}
+  const r=await fetch(`/api/inbox/${CUR}/speakers`,{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify(mapping)});
+  const j=await r.json();
+  if(!r.ok||!j.ok){toast(j.error||'Ошибка');return}
+  toast('Имена применены ко всем файлам встречи');
+  openMeeting(CUR);
+}
+
+// ── Отправка в Trello ───────────────────────────────────────────────────────
+async function sendAll(){
+  const ready = DATA.proposals.filter(p=>p.kind==='task'
+    && p.status!=='sent' && p.status!=='rejected'
+    && (p.criterion||'').trim() && p.due);
+  if(!ready.length){toast('Нет готовых задач: нужны срок и критерий');return}
+  const btn=$('send-btn'); btn.disabled=true; btn.textContent='Отправляю…';
+  const r=await fetch(`/api/inbox/${CUR}/send`,{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({proposal_ids:ready.map(p=>p.id)})});
+  const j=await r.json();
+  btn.disabled=false; btn.textContent='📤 Отправить принятые в Trello';
+  if(!r.ok||!j.ok){toast(j.error||'Ошибка отправки');return}
+  const n=(j.sent||[]).length, k=(j.skipped||[]).length;
+  toast(k?`${n} ушло в Trello · ${k} пропущено`:`${n} карточек создано · первый срок записан в журнал`);
+  openMeeting(CUR);
+}
+
+// ── Плеер ───────────────────────────────────────────────────────────────────
+function playAt(sec){
+  if(!DATA.audio_url){toast('Аудио этой встречи не сохранено');return}
+  const bar=$('player-bar'), a=$('player');
+  if(a.getAttribute('src')!==DATA.audio_url) a.src=DATA.audio_url;
+  bar.classList.add('on');
+  const seek=()=>{try{a.currentTime=Math.max(0,sec-2);a.play()}catch(e){}};
+  if(a.readyState>=1) seek(); else a.addEventListener('loadedmetadata',seek,{once:true});
+}
+function closePlayer(){const a=$('player');try{a.pause()}catch(e){};$('player-bar').classList.remove('on')}
+
+// ── Рендер ──────────────────────────────────────────────────────────────────
+function ownerSelect(p){
+  const label = p.owner && /^(SPEAKER|PERSON|UNKNOWN)/i.test(p.owner) ? p.owner : null;
+  const opts = ['<option value="">— исполнитель —</option>']
+    .concat((DATA.people||[]).map(x=>`<option ${p.owner===x?'selected':''}>${esc(x)}</option>`));
+  if(label) opts.push(`<option selected>${esc(label)}</option>`);
+  opts.push('<option value="__new">+ Новый участник…</option>');
+  return `<select class="inp" onchange="setOwner(${p.id},this.value)">${opts.join('')}</select>`;
+}
+function taskRow(p){
+  const dueBtns = dueOptions(DATA.meeting.date).map(d=>
+    `<button class="stb" aria-pressed="${p.due===d.k}" onclick="setDue(${p.id},'${d.k}')"
+      title="${d.k}${isPast(d.k)?' — уже прошло (считается от даты планёрки)':''}">${d.t}${isPast(d.k)?' ⚠':''}</button>`).join('');
+  const hint = (p.source_deadline||'').trim();
+  return `<div class="prop ${p.status==='rejected'?'off':''} ${p.status==='sent'?'sent':''}">
+    <input class="inp full" value="${esc(p.text)}" ${p.status==='sent'?'disabled':''}
+      oninput="textInput(${p.id},this.value)">
+    <div class="row" style="margin-top:8px">
+      ${p.status==='sent'?`<span class="chip g">✓ в Trello</span>`:ownerSelect(p)}
+      ${p.t_sec!=null?`<button class="chip a" onclick="playAt(${p.t_sec})">🎧 ${mmss(p.t_sec)}</button>`
+        :(p.quote_verified?'':'<span class="chip r" title="Цитата не найдена в расшифровке">цитата не подтверждена</span>')}
+      ${p.confidence?`<span class="chip ${p.confidence==='high'?'g':''}">уверенность: ${esc(p.confidence)}</span>`:''}
+      ${hint?`<span class="chip v" title="Срок, прозвучавший в речи">🗣 ${esc(hint)}</span>`:''}
+      ${p.owner_note?`<span class="chip r" title="${esc(p.owner_note)}">owner не распознан</span>`:''}
+    </div>
+    ${p.status!=='sent'?`
+    <input class="inp full ${(p.criterion||'').trim()?'':'bad'}" style="margin-top:8px"
+      placeholder="Критерий готовности — обязателен, без него карточка не создастся"
+      value="${esc(p.criterion||'')}" oninput="critInput(${p.id},this.value)">
+    <div class="row" style="margin-top:9px">
+      <span class="duelbl">Срок</span>${dueBtns}
+      <input type="date" class="inp" value="${p.due||''}" onchange="setDue(${p.id},this.value)">
+      ${p.due?`<span class="chip a">${fd(p.due)}</span>`:'<span class="chip r">не задан</span>'}
+      <span style="flex:1"></span>
+      <button class="stb warn" aria-pressed="${p.status==='rejected'}"
+        onclick="reject(${p.id},${p.status==='rejected'})">${p.status==='rejected'?'вернуть':'отклонить'}</button>
+      <button class="stb" onclick="demote(${p.id})" title="Убрать в мелочи">↓ в мелочи</button>
+    </div>`:`<div class="tc" style="margin-top:6px">первый срок ${fd(p.due)} записан в журнал — он не изменится, даже если дату подвинут на доске</div>`}
+    ${p.quote?`<div class="q">«${esc(p.quote)}»</div>`:''}
+  </div>`;
+}
+function minorRow(p){
+  return `<div class="prop ${p.status==='rejected'?'off':''}">
+    <div class="row" style="justify-content:space-between">
+      <b style="font-size:13.5px">${esc(p.text)}</b>
+      <span class="chip ${p.confidence==='low'?'r':''}">${p.confidence==='low'?'низкая':'средняя'}</span>
+    </div>
+    <div class="tc" style="margin-top:3px">${esc(p.owner||'не назначен')}
+      ${p.context?' · '+esc(String(p.context).slice(0,90)):''}
+      ${p.t_sec!=null?` · <button class="chip a" onclick="playAt(${p.t_sec})" style="font-size:11px">🎧 ${mmss(p.t_sec)}</button>`:''}</div>
+    ${p.quote?`<div class="q">«${esc(p.quote)}»</div>`:''}
+    <div class="row" style="margin-top:8px">
+      ${p.status==='rejected'
+        ?`<button class="stb" onclick="reject(${p.id},true)">вернуть</button>`
+        :`<button class="stb" onclick="promote(${p.id})">＋ В задачи</button>
+          <button class="stb" onclick="reject(${p.id},false)">✖ Не надо</button>`}
+    </div>
+  </div>`;
+}
+function render(){
+  const m=DATA.meeting, props=DATA.proposals||[];
+  const tasks=props.filter(p=>p.kind==='task');
+  const minors=props.filter(p=>p.kind!=='task'&&p.status!=='sent');
+  const sent=props.filter(p=>p.status==='sent');
+  const pending=tasks.filter(p=>p.status!=='sent'&&p.status!=='rejected');
+  const unnamed=(DATA.speakers||[]).filter(s=>!s.person&&/^(SPEAKER|UNKNOWN)/i.test(s.code));
+  const dateWarn=(m.date_source==='mtime'||m.date_source==='processing_day');
+
+  $('head-sub').textContent=`${m.title} · ${fd(m.date)}${m.category?' · '+m.category:''}`;
+
+  let html='';
+  if(dateWarn) html+=`<div class="box r">📅 Дата встречи (${fd(m.date)}) определена косвенно
+    (${m.date_source==='mtime'?'по дате изменения файла':'по дню обработки'}) —
+    кнопки сроков считаются от неё. Если дата неверна, переобработайте файл с датой в форме.</div>`;
+
+  if(unnamed.length){
+    html+=`<div class="box d">🎙 <b>Кто говорит?</b> Неизвестных голосов: ${unnamed.length}.
+      Имена подставятся во все файлы и в исполнителей задач. Приёмку это не блокирует.
+      <div class="row" style="margin-top:9px">
+      ${unnamed.map(s=>`<span class="row" style="gap:4px">
+        ${s.samples&&s.samples[0]?`<span class="tc" title="${esc(s.samples[0])}">«${esc(s.samples[0].slice(0,40))}…»</span>`:''}
+        <select class="inp" onchange="spkPending['${esc(s.code)}']=this.value">
+          <option value="">${esc(s.code)} → выберите</option>
+          ${(DATA.people||[]).map(p=>`<option>${esc(p)}</option>`).join('')}
+        </select></span>`).join('')}
+      <button class="btn" style="padding:7px 14px;font-size:12.5px" onclick="applySpeakers()">Применить</button>
+      </div></div>`;
+  }
+
+  html+=`<div class="card"><h2>Задачи на приёмку <span class="n">${pending.length}</span></h2>
+    ${pending.length?pending.map(taskRow).join('')
+      :'<div class="empty">✅<b>Всё разобрано</b>Новых задач нет</div>'}
+    ${pending.length?`<div class="row" style="margin-top:12px">
+      <button class="btn p" id="send-btn" onclick="sendAll()" ${DATA.trello_ready?'':'disabled title="Trello не настроен в .env"'}>📤 Отправить принятые в Trello</button>
+      <span class="muted" style="font-size:12.5px">${DATA.trello_ready
+        ?'Уйдут задачи со сроком и критерием. Без них — останутся тут.'
+        :'⚠ Trello не настроен: TRELLO_KEY / TRELLO_TOKEN / TRELLO_LIST_ID в .env'}</span>
+    </div>`:''}
+  </div>`;
+
+  if(minors.length){
+    html+=`<div class="card"><h2>Мелочи <span class="n">${minors.length}</span></h2>
+      <div class="box d">Прозвучало, но поручением не было. В Trello не уйдёт, пока не возьмёте сами.</div>
+      ${minors.map(minorRow).join('')}</div>`;
+  }
+
+  if(sent.length){
+    html+=`<div class="card"><h2>Ушло в Trello <span class="n">${sent.length}</span></h2>
+      ${sent.map(p=>`<div class="li"><b>${esc(p.text)}</b>
+        <div class="tc">${esc(p.owner||'—')} · первый срок ${fd(p.due)}</div></div>`).join('')}
+      <p class="muted" style="font-size:12.5px;margin-top:8px">
+        Первые сроки — в журнале отправки и в зеркале Telegram. Они не меняются.</p></div>`;
+  }
+
+  $('app').innerHTML=html;
+}
+loadList();
+</script>
+</body>
+</html>

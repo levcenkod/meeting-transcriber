@@ -23,6 +23,12 @@ services:
       - ${OBSIDIAN_VAULT_PATH:-./obsidian_vault}:/vault
       # Кэш моделей HuggingFace — сохраняется между перезапусками
       - hf_cache:/root/.cache/huggingface
+      # Состояние приложения (SQLite) — named volume, не bind-mount:
+      # SQLite поверх виндового bind-mount ловит проблемы блокировок (ADR-002).
+      # Бэкапы автоматически падают в ./output/backups/ — они видны на хосте.
+      - app_data:/data
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
     env_file: .env
     # Позволяет Flask-серверу обращаться к LLM, запущенному на хосте
     # (нужно если LLM_BASE_URL=http://localhost:XXXX)
@@ -40,4 +46,5 @@ services:
 
 volumes:
   hf_cache:
+  app_data:
 

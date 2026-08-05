@@ -57,27 +57,18 @@ RUN pip install whisperx openai flask spacy
 RUN python -m spacy download ru_core_news_md || python -m spacy download ru_core_news_sm || echo "[WARN] No Russian spaCy model - anonymization will use regex only"
 RUN python -m spacy download en_core_web_sm || echo "[WARN] No English spaCy model"
 
-# Create working directories
-RUN mkdir -p /input /output /scripts
+# Create working directories (/data — SQLite-состояние, named volume)
+RUN mkdir -p /input /output /scripts /data
 
-# Copy postprocess script
-COPY scripts/postprocess.py /scripts/postprocess.py
-
-# Copy anonymize module
-COPY scripts/anonymize.py /scripts/anonymize.py
-
-# Copy summarize script
-COPY scripts/summarize.py /scripts/summarize.py
-
-# Copy entrypoint script
-COPY scripts/entrypoint.sh /scripts/entrypoint.sh
+# Pipeline scripts: postprocess, summarize, anonymize + модули v0
+# (meeting_date, evidence, people, db, trello_client, telegram_notify, overdue_bot)
+COPY scripts/ /scripts/
 RUN chmod +x /scripts/entrypoint.sh
 
 # Web UI
 RUN mkdir -p /app/templates /app/static
 COPY app.py /app/app.py
-COPY templates/index.html /app/templates/index.html
-COPY templates/settings.html /app/templates/settings.html
+COPY templates/ /app/templates/
 COPY static/ /app/static/
 
 WORKDIR /

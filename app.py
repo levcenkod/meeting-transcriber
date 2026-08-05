@@ -11,12 +11,38 @@ import queue
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template, request, send_file
+
+# Shared pipeline helpers: /scripts inside the container, ./scripts on the host
+for _p in ("/scripts", str(Path(__file__).parent / "scripts")):
+    if Path(_p).is_dir() and _p not in sys.path:
+        sys.path.insert(0, _p)
+try:
+    from meeting_date import resolve_meeting_date
+except ImportError:
+    resolve_meeting_date = None
+try:
+    import db as state_db
+except ImportError:
+    state_db = None
+try:
+    import people as people_mod
+except ImportError:
+    people_mod = None
+try:
+    import trello_client
+except ImportError:
+    trello_client = None
+try:
+    import telegram_notify
+except ImportError:
+    telegram_notify = None
 
 app = Flask(__name__, template_folder="/app/templates")
 
@@ -488,6 +514,38 @@ def _read_meta(meta_path: Path) -> dict | None:
         return None
 
 
+def _merge_meta(out_dir: Path, stem: str, category: str, subcategory: str,
+                meeting_date: str | None, date_source: str,
+                audio_name: str | None) -> None:
+    """Дописать в {stem}_meta.json аудио и дату встречи, не затирая остального.
+
+    summarize.py пишет мету со своей логикой даты (учитывая MEETING_DATE) —
+    здесь только заполняем пропуски и добавляем путь к аудио, чтобы мета
+    существовала и для прогонов без LLM.
+    """
+    meta_path = out_dir / f"{stem}_meta.json"
+    meta: dict = {}
+    if meta_path.exists():
+        try:
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                meta = data
+        except Exception:
+            pass
+    meta.setdefault("stem", stem)
+    meta.setdefault("title", stem)
+    meta.setdefault("category", category)
+    meta.setdefault("subcategory", subcategory)
+    if audio_name:
+        meta["audio"] = audio_name
+    if meeting_date and not meta.get("date"):
+        meta["date"] = meeting_date
+        meta["date_source"] = date_source
+    meta_path.write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
 def _log(q_or_job, text: str, level: str = "info") -> None:
     """Append a log entry to the job's buffer and fan it out to all subscribers."""
     msg = {"type": "log", "level": level, "text": text}
@@ -538,7 +596,9 @@ def _run_step(job: dict, cmd: list, env: dict, label: str) -> bool:
 
 def _pipeline(job_id: str, source_path: Path, source_kind: str, stem: str,
               category: str, subcategory: str,
-              language: str, llm_enabled: bool) -> None:
+              language: str, llm_enabled: bool,
+              meeting_date: str | None = None,
+              date_source: str = "none") -> None:
     """Main pipeline — runs in a background daemon thread.
 
     `source_kind` selects the entry point:
@@ -557,10 +617,27 @@ def _pipeline(job_id: str, source_path: Path, source_kind: str, stem: str,
     job["stem"]    = stem
 
     try:
+        # ── Keep the source audio next to the meeting artifacts ──────────────
+        # Иначе исходник уезжает в /processed и кнопке «послушать» нечего играть.
+        audio_name = None
+        if source_kind == "audio":
+            audio_name = f"{stem}_audio{source_path.suffix.lower()}"
+            audio_dst = out_dir / audio_name
+            if not audio_dst.exists():
+                try:
+                    shutil.copy2(source_path, audio_dst)
+                    _log(job, f"🎧 Исходное аудио сохранено: {audio_name}", "ok")
+                except Exception as exc:
+                    _log(job, f"Не удалось сохранить копию аудио: {exc}", "warn")
+                    audio_name = None
+
         # ── Build environment ────────────────────────────────────────────────────
         env = _effective_env()
         env["OUTPUT_SUBDIR"] = out_subdir
         env["LANGUAGE"]      = language
+        if meeting_date:
+            env["MEETING_DATE"] = meeting_date
+            _log(job, f"📅 Дата встречи: {meeting_date} (источник: {date_source})")
 
         # Rewrite localhost → host.docker.internal so summarize.py can reach
         # an LLM server running on the host machine
@@ -626,6 +703,16 @@ def _pipeline(job_id: str, source_path: Path, source_kind: str, stem: str,
 
         summary_path = out_dir / f"{stem}_summary.md"
         summary_md   = summary_path.read_text(encoding="utf-8") if summary_path.exists() else None
+
+        # ── Meta: аудио + дата встречи (в т.ч. для прогонов без LLM) ─────────
+        try:
+            _merge_meta(out_dir, stem, category, subcategory,
+                        meeting_date, date_source, audio_name)
+        except Exception as exc:
+            _log(job, f"meta.json: {exc}", "warn")
+
+        # ── Регистрация встречи в БД состояния (идемпотентно) ────────────────
+        _db_register_meeting(out_dir, stem)
 
         job["result"] = {
             "primary": primary, "secondary": secondary,
@@ -905,6 +992,12 @@ def upload():
     if not _valid_cat_name(category) or not _valid_cat_name(subcategory):
         return jsonify({"error": "Выберите категорию и подкатегорию перед запуском"}), 400
 
+    # Настоящая дата планёрки: поле формы, иначе дата в имени файла.
+    meeting_date, date_source = (None, "none")
+    if resolve_meeting_date is not None:
+        meeting_date, date_source = resolve_meeting_date(
+            explicit=request.form.get("meeting_date"), filename=filename)
+
     # Auto-register the chosen pair so it persists for next time
     _register_category_pair(category, subcategory)
 
@@ -912,7 +1005,8 @@ def upload():
 
     threading.Thread(
         target=_pipeline,
-        args=(job_id, source_path, source_kind, stem, category, subcategory, language, llm_enabled),
+        args=(job_id, source_path, source_kind, stem, category, subcategory,
+              language, llm_enabled, meeting_date, date_source),
         daemon=True,
     ).start()
 
@@ -1089,32 +1183,58 @@ def download(rel_path: str):
     return send_file(str(full), as_attachment=True)
 
 
+@app.route("/media/<path:rel_path>")
+def media(rel_path: str):
+    """Stream a media file with HTTP Range support (перемотка на таймкод)."""
+    full = (OUTPUT_DIR / rel_path).resolve()
+    if not str(full).startswith(str(OUTPUT_DIR.resolve())):
+        return jsonify({"error": "Forbidden"}), 403
+    if not full.is_file():
+        return jsonify({"error": "Not found"}), 404
+    # conditional=True → werkzeug честно обрабатывает заголовок Range
+    return send_file(str(full), conditional=True)
+
+
 # ── Archive: browse past meetings ────────────────────────────────────────────
 
 @app.route("/meetings")
 def list_meetings():
-    """Return all meetings found in OUTPUT_DIR, grouped by category."""
+    """Return all meetings found in OUTPUT_DIR (any depth), grouped by category.
+
+    Пайплайн пишет в output/<Категория>/<Подкатегория>/, поэтому ищем мету
+    рекурсивно; категория/подкатегория берутся из пути (истина), мета — fallback.
+    """
     items = []
     if OUTPUT_DIR.exists():
-        for meta_path in OUTPUT_DIR.glob("*/*_meta.json"):
-            if "_obsidian" in meta_path.parts or "intermediate" in meta_path.parts:
+        for meta_path in OUTPUT_DIR.rglob("*_meta.json"):
+            rel_parts = meta_path.relative_to(OUTPUT_DIR).parts
+            if rel_parts and rel_parts[0] in ("_obsidian", "backups"):
+                continue
+            if "intermediate" in rel_parts:
                 continue
             meta = _read_meta(meta_path)
             if not meta:
                 continue
-            category = meta.get("category") or meta_path.parent.name
-            stem     = meta.get("stem")     or meta_path.name.replace("_meta.json", "")
+            rel_dir = meta_path.parent.relative_to(OUTPUT_DIR)
+            dparts  = rel_dir.parts
+            category    = (dparts[0] if dparts else "") or meta.get("category") or "Общее"
+            subcategory = (dparts[1] if len(dparts) > 1 else "") or meta.get("subcategory") or ""
+            stem     = meta.get("stem") or meta_path.name.replace("_meta.json", "")
             summary  = meta_path.parent / f"{stem}_summary.md"
             if not summary.exists():
                 continue
             items.append({
-                "title":     meta.get("title", stem),
-                "date":      meta.get("date", ""),
-                "category":  category,
-                "attendees": meta.get("attendees", []),
-                "stem":      stem,
-                "summary_path": str(summary.relative_to(OUTPUT_DIR)),
-                "mtime":     summary.stat().st_mtime,
+                "title":       meta.get("title", stem),
+                "date":        meta.get("date", ""),
+                "date_source": meta.get("date_source", ""),
+                "category":    category,
+                "subcategory": subcategory,
+                "dir":         rel_dir.as_posix(),
+                "audio":       meta.get("audio") or "",
+                "attendees":   meta.get("attendees", []),
+                "stem":        stem,
+                "summary_path": summary.relative_to(OUTPUT_DIR).as_posix(),
+                "mtime":       summary.stat().st_mtime,
             })
     # Sort newest first
     items.sort(key=lambda x: (x["date"], x["mtime"]), reverse=True)
@@ -1129,12 +1249,13 @@ def list_meetings():
 def get_meeting():
     """Return summary content + file list for a past meeting.
 
-    Query: ?category=...&stem=...
+    Query: ?dir=<Категория/Подкатегория>&stem=...   (dir — путь из /meetings;
+    старый параметр ?category= принимается как синоним для совместимости)
     """
-    category = (request.args.get("category") or "").strip()
+    category = (request.args.get("dir") or request.args.get("category") or "").strip().strip("/")
     stem     = (request.args.get("stem") or "").strip()
     if not category or not stem:
-        return jsonify({"error": "category and stem required"}), 400
+        return jsonify({"error": "dir and stem required"}), 400
 
     out_dir = (OUTPUT_DIR / category).resolve()
     if not str(out_dir).startswith(str(OUTPUT_DIR.resolve())) or not out_dir.is_dir():
@@ -1164,6 +1285,267 @@ def get_meeting():
         "category":   category,
         "stem":       stem,
     })
+
+
+# ── Приёмка (ТЗ v0): предложения → человек → Trello, журнал первых сроков ────
+
+PEOPLE_FILE = OUTPUT_DIR / "_people.json"
+
+
+def _meeting_row(meeting_id: int) -> dict | None:
+    if state_db is None:
+        return None
+    with state_db.get_db() as con:
+        row = con.execute("SELECT * FROM meeting WHERE id = ?",
+                          (meeting_id,)).fetchone()
+        return dict(row) if row else None
+
+
+@app.route("/inbox")
+def inbox_page():
+    return render_template("inbox.html")
+
+
+@app.route("/api/people", methods=["GET", "POST"])
+def api_people():
+    if people_mod is None:
+        return jsonify({"people": []})
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        name = (data.get("name") or "").strip()
+        if not name:
+            return jsonify({"ok": False, "error": "пустое имя"}), 400
+        cur = people_mod.load_people(PEOPLE_FILE)
+        if name not in cur:
+            cur.append(name)
+            people_mod.save_people(cur, PEOPLE_FILE)
+    return jsonify({"people": people_mod.load_people(PEOPLE_FILE)})
+
+
+@app.route("/api/inbox")
+def api_inbox():
+    if state_db is None:
+        return jsonify({"meetings": [], "error": "БД недоступна"})
+    with state_db.get_db() as con:
+        return jsonify({"meetings": state_db.inbox_meetings(con)})
+
+
+@app.route("/api/inbox/<int:meeting_id>")
+def api_inbox_meeting(meeting_id: int):
+    if state_db is None:
+        return jsonify({"error": "БД недоступна"}), 500
+    m = _meeting_row(meeting_id)
+    if not m:
+        return jsonify({"error": "Встреча не найдена"}), 404
+    out_dir = OUTPUT_DIR / m["dir"]
+    stem = m["stem"]
+
+    with state_db.get_db() as con:
+        # Свежая синхронизация из actions.json (правки человека не затираются)
+        actions_path = out_dir / f"{stem}_actions.json"
+        if actions_path.exists():
+            try:
+                actions = json.loads(actions_path.read_text(encoding="utf-8"))
+                if isinstance(actions, list):
+                    state_db.sync_proposals(con, meeting_id, actions)
+            except Exception as exc:
+                print(f"[INBOX] sync_proposals {stem}: {exc}", flush=True)
+        props = state_db.proposals_for_meeting(con, meeting_id)
+        smap = {r["speaker_label"]: r["person"] for r in con.execute(
+            "SELECT speaker_label, person FROM speaker_map WHERE meeting_id = ?",
+            (meeting_id,))}
+
+    speakers = []
+    sp_path = out_dir / f"{stem}_speakers.txt"
+    if sp_path.exists():
+        try:
+            for s in _parse_speakers(sp_path):
+                speakers.append({**s, "person": smap.get(s["code"], "")})
+        except Exception:
+            pass
+
+    audio_url = ""
+    if m.get("audio") and (out_dir / m["audio"]).exists():
+        audio_url = "/media/" + "/".join(
+            [*[p for p in m["dir"].split("/") if p], m["audio"]])
+
+    return jsonify({
+        "meeting": m,
+        "proposals": props,
+        "speakers": speakers,
+        "audio_url": audio_url,
+        "people": people_mod.load_people(PEOPLE_FILE) if people_mod else [],
+        "trello_ready": bool(trello_client and trello_client.configured()),
+        "telegram_ready": bool(telegram_notify and telegram_notify.configured()),
+    })
+
+
+@app.route("/api/proposal/<int:proposal_id>", methods=["POST"])
+def api_proposal_patch(proposal_id: int):
+    if state_db is None:
+        return jsonify({"error": "БД недоступна"}), 500
+    data = request.get_json(silent=True) or {}
+    if "due" in data:
+        due = (data.get("due") or "").strip()
+        if due and not re.fullmatch(r"20\d{2}-\d{2}-\d{2}", due):
+            return jsonify({"ok": False, "error": "срок в формате YYYY-MM-DD"}), 400
+        data["due"] = due or None
+    with state_db.get_db() as con:
+        row = state_db.update_proposal(con, proposal_id, data)
+    if not row:
+        return jsonify({"ok": False, "error": "не найдено"}), 404
+    return jsonify({"ok": True, "proposal": row})
+
+
+@app.route("/api/inbox/<int:meeting_id>/speakers", methods=["POST"])
+def api_assign_speakers(meeting_id: int):
+    """SPEAKER_XX → человек: файлы, meta, speaker_map, владельцы предложений."""
+    if state_db is None:
+        return jsonify({"error": "БД недоступна"}), 500
+    m = _meeting_row(meeting_id)
+    if not m:
+        return jsonify({"error": "Встреча не найдена"}), 404
+    raw = request.get_json(silent=True) or {}
+    mapping = {k: v.strip() for k, v in raw.items()
+               if isinstance(k, str) and isinstance(v, str) and v.strip()}
+    if not mapping:
+        return jsonify({"ok": False, "error": "нет назначений"}), 400
+
+    out_dir = OUTPUT_DIR / m["dir"]
+    stem = m["stem"]
+    text_exts = {".txt", ".md", ".srt", ".vtt", ".tsv", ".json"}
+    for f in out_dir.glob(f"{stem}*"):
+        if not f.is_file() or f.suffix.lower() not in text_exts:
+            continue
+        if "intermediate" in f.parts or f.name.endswith("_anonymization_map.json"):
+            continue
+        try:
+            content = f.read_text(encoding="utf-8")
+            for code, name in mapping.items():
+                content = content.replace(code, name)
+            f.write_text(content, encoding="utf-8")
+        except Exception:
+            pass
+
+    # meta.attendees: метки → имена
+    meta_path = out_dir / f"{stem}_meta.json"
+    meta = _read_meta(meta_path) or {}
+    if meta:
+        attendees = [mapping.get(a, a) for a in meta.get("attendees", [])]
+        meta["attendees"] = sorted(set(attendees))
+        try:
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2),
+                                 encoding="utf-8")
+        except Exception:
+            pass
+
+    with state_db.get_db() as con:
+        for label, person in mapping.items():
+            state_db.set_speaker(con, meeting_id, label, person)
+        state_db.upsert_meeting(con, m["dir"], stem, meta or {})
+        props = state_db.proposals_for_meeting(con, meeting_id)
+
+    # новые имена — в реестр людей
+    if people_mod is not None:
+        cur = people_mod.load_people(PEOPLE_FILE)
+        added = [p for p in mapping.values() if p not in cur]
+        if added:
+            people_mod.save_people(cur + added, PEOPLE_FILE)
+
+    return jsonify({"ok": True, "proposals": props})
+
+
+def _card_desc(m: dict, row: dict) -> str:
+    parts = [f"Ответственный: {row.get('owner') or '—'}"]
+    if row.get("criterion"):
+        parts.append(f"Критерий готовности: {row['criterion']}")
+    src = f"Из планёрки: {m.get('title') or m.get('stem')} · {m.get('date') or ''}".strip(" ·")
+    if row.get("t_sec") is not None:
+        t = int(row["t_sec"])
+        src += f" · таймкод {t // 60}:{t % 60:02d}"
+    parts.append(src)
+    if row.get("quote"):
+        parts.append(f"Цитата: «{row['quote']}»")
+    parts.append("— создано транскрайбером, статусы ведём в Trello")
+    return "\n\n".join(parts)
+
+
+@app.route("/api/inbox/<int:meeting_id>/send", methods=["POST"])
+def api_send_to_trello(meeting_id: int):
+    """Отправка принятых задач в Trello + журнал первых сроков + зеркало в TG.
+
+    Идемпотентно: status='sent' повторно не отправляется.
+    """
+    if state_db is None:
+        return jsonify({"error": "БД недоступна"}), 500
+    if trello_client is None or not trello_client.configured():
+        return jsonify({"ok": False,
+                        "error": "Trello не настроен (TRELLO_KEY/TOKEN/LIST_ID в .env)"}), 400
+    m = _meeting_row(meeting_id)
+    if not m:
+        return jsonify({"error": "Встреча не найдена"}), 404
+    body = request.get_json(silent=True) or {}
+    ids = [int(i) for i in body.get("proposal_ids", []) if str(i).isdigit()]
+    if not ids:
+        return jsonify({"ok": False, "error": "нет задач для отправки"}), 400
+
+    sent, skipped = [], []
+    for pid in ids:
+        with state_db.get_db() as con:
+            row = con.execute(
+                "SELECT * FROM proposal WHERE id = ? AND meeting_id = ?",
+                (pid, meeting_id)).fetchone()
+        if not row:
+            skipped.append({"id": pid, "reason": "не найдено"})
+            continue
+        row = dict(row)
+        if row["status"] == "sent":
+            skipped.append({"id": pid, "reason": "уже отправлено"})
+            continue
+        if row["kind"] != "task":
+            skipped.append({"id": pid, "reason": "мелочь — сначала «В приёмку»"})
+            continue
+        if not (row.get("criterion") or "").strip():
+            skipped.append({"id": pid, "reason": "нет критерия готовности"})
+            continue
+        if not row.get("due"):
+            skipped.append({"id": pid, "reason": "нет срока"})
+            continue
+
+        try:
+            card = trello_client.create_card(
+                name=row["text"], desc=_card_desc(m, row),
+                due=row["due"], label_name=row.get("label") or "",
+                owner=row.get("owner") or "")
+        except Exception as exc:
+            skipped.append({"id": pid, "reason": f"Trello: {exc}"})
+            continue
+
+        card_id = str(card.get("id") or "")
+        card_url = str(card.get("shortUrl") or card.get("url") or "")
+        with state_db.get_db() as con:
+            jid = state_db.journal_append(
+                con, text=row["text"], owner=row.get("owner") or "",
+                due_v1=row["due"], meeting_id=meeting_id, proposal_id=pid,
+                t_sec=row.get("t_sec"),
+                trello_card_id=card_id, trello_url=card_url)
+            con.execute("UPDATE proposal SET status = 'sent', updated_at = ? WHERE id = ?",
+                        (time.strftime("%Y-%m-%d %H:%M:%S"), pid))
+
+        # Зеркало журнала в Telegram — страховка первых сроков (ADR-002)
+        mirrored = False
+        if telegram_notify is not None:
+            mirrored = telegram_notify.send(
+                f"📌 В Trello: {row['text']}\n"
+                f"Ответственный: {row.get('owner') or '—'} · первый срок {row['due']}\n"
+                f"{card_url}", silent=True)
+        if mirrored:
+            with state_db.get_db() as con:
+                con.execute("UPDATE dispatch_journal SET mirrored = 1 WHERE id = ?",
+                            (jid,))
+        sent.append({"id": pid, "card_url": card_url, "due_v1": row["due"]})
+
+    return jsonify({"ok": True, "sent": sent, "skipped": skipped})
 
 
 # ── Watch folder ("воронка") ─────────────────────────────────────────────────
@@ -1275,11 +1657,22 @@ def _ingest_inbox_file(path: Path) -> None:
     _, _, language, llm_enabled = _watch_defaults()
     _register_category_pair(category, subcategory)
 
+    # Дата планёрки: имя файла, иначе mtime исходника (лучшее, что есть у воронки).
+    meeting_date, date_source = (None, "none")
+    if resolve_meeting_date is not None:
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = None
+        meeting_date, date_source = resolve_meeting_date(
+            filename=filename, mtime=mtime)
+
     job_id = _create_job(filename, category, subcategory)
     print(f"[WATCH] Принят файл из воронки: {filename} → {category}/{subcategory}", flush=True)
     try:
         # Run synchronously inside the worker thread (already a background thread).
-        _pipeline(job_id, path, source_kind, stem, category, subcategory, language, llm_enabled)
+        _pipeline(job_id, path, source_kind, stem, category, subcategory,
+                  language, llm_enabled, meeting_date, date_source)
     except Exception as exc:
         print(f"[WATCH] Ошибка обработки {filename}: {exc}", flush=True)
     success = _jobs.get(job_id, {}).get("status") == "done"
@@ -1348,9 +1741,57 @@ def _start_watcher() -> None:
           f"(интервал {int(_watch_interval())} c).", flush=True)
 
 
+def _db_register_meeting(out_dir: Path, stem: str) -> None:
+    """Upsert встречи в SQLite после обработки. Ошибки БД не роняют пайплайн."""
+    if state_db is None:
+        return
+    try:
+        meta = _read_meta(out_dir / f"{stem}_meta.json") or {}
+        speakers = out_dir / f"{stem}_speakers.txt"
+        chash = state_db._sha256_file(speakers) if speakers.exists() else None
+        rel = out_dir.resolve().relative_to(OUTPUT_DIR.resolve()).as_posix()
+        with state_db.get_db() as con:
+            mid = state_db.upsert_meeting(con, rel, stem, meta, chash)
+            actions_path = out_dir / f"{stem}_actions.json"
+            if actions_path.exists():
+                actions = json.loads(actions_path.read_text(encoding="utf-8"))
+                if isinstance(actions, list):
+                    state_db.sync_proposals(con, mid, actions)
+    except Exception as exc:
+        print(f"[DB] upsert встречи {stem}: {exc}", flush=True)
+
+
+def _init_state_db() -> None:
+    """Схема + импорт истории из output/ + бэкап при старте и раз в сутки."""
+    if state_db is None:
+        print("[DB] scripts/db.py не найден — состояние отключено", flush=True)
+        return
+    try:
+        state_db.init_db()
+        stats = state_db.sync_meetings_from_output(OUTPUT_DIR)
+        print(f"[DB] {state_db.db_path()} · встреч найдено: {stats['seen']}", flush=True)
+        state_db.backup(OUTPUT_DIR / "backups")
+    except Exception as exc:
+        print(f"[DB] Ошибка инициализации: {exc}", flush=True)
+        return
+
+    def _daily_backup():
+        while True:
+            time.sleep(24 * 3600)
+            try:
+                state_db.sync_meetings_from_output(OUTPUT_DIR)
+                state_db.backup(OUTPUT_DIR / "backups")
+                print("[DB] Суточный бэкап сделан", flush=True)
+            except Exception as exc:
+                print(f"[DB] Ошибка суточного бэкапа: {exc}", flush=True)
+
+    threading.Thread(target=_daily_backup, daemon=True, name="db-backup").start()
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     INPUT_DIR.mkdir(exist_ok=True)
+    _init_state_db()
     _start_watcher()
     app.run(host="0.0.0.0", port=8080, threaded=True)
