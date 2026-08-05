@@ -1,0 +1,35 @@
+# Бот просрочек: раз в день читает доску Trello и шлёт одно сообщение
+# в Telegram. Живёт в GitHub Actions, потому что постоянного сервера
+# у проекта нет, а выключенный локальный комп делает молчание бота
+# неотличимым от «просрочек нет» (ADR-002).
+#
+# Настройка: Settings → Secrets and variables → Actions → New repository secret
+#   TRELLO_KEY, TRELLO_TOKEN, TRELLO_BOARD_ID,
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+# Проверить руками: вкладка Actions → overdue-bot → Run workflow.
+
+name: overdue-bot
+
+on:
+  schedule:
+    - cron: "0 6 * * *"   # 06:00 UTC = 09:00 МСК, ежедневно
+  workflow_dispatch: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run overdue bot
+        env:
+          TRELLO_KEY: ${{ secrets.TRELLO_KEY }}
+          TRELLO_TOKEN: ${{ secrets.TRELLO_TOKEN }}
+          TRELLO_BOARD_ID: ${{ secrets.TRELLO_BOARD_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TZ: Europe/Moscow
+        run: python scripts/overdue_bot.py
