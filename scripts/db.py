@@ -229,6 +229,13 @@ def sync_meetings_from_output(output_dir: Path) -> dict:
                 continue
             stem = meta.get("stem") or meta_path.name[: -len("_meta.json")]
             dir_rel = meta_path.parent.relative_to(output_dir).as_posix()
+            # Категория/подкатегория — из пути (истина): старые меты писали
+            # в category имя последнего сегмента («Без подкатегории»).
+            parts = [p for p in dir_rel.split("/") if p]
+            if parts:
+                meta = {**meta,
+                        "category": parts[0],
+                        "subcategory": parts[1] if len(parts) > 1 else ""}
             speakers = meta_path.parent / f"{stem}_speakers.txt"
             chash = _sha256_file(speakers) if speakers.exists() else None
             stats["seen"] += 1

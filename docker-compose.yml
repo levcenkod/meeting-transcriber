@@ -11,7 +11,8 @@ services:
     # Override ENTRYPOINT — запускаем Flask вместо entrypoint.sh
     entrypoint: ["python", "/app/app.py"]
     ports:
-      - "8080:8080"
+      # Хост-порт можно сменить в .env: APP_PORT=8081 (если 8080 занят)
+      - "${APP_PORT:-8080}:8080"
     volumes:
       - ./input:/input
       - ./output:/output
