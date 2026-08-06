@@ -747,7 +747,14 @@ def _pipeline(job_id: str, source_path: Path, source_kind: str, stem: str,
 
 @app.route("/")
 def index():
-    return render_template("index.html", active="meetings")
+    """Встречи (макет v3): список + одна встреча. Загрузка — на /upload."""
+    return render_template("meetings.html", active="meetings")
+
+
+@app.route("/upload-page")
+@app.route("/upload", methods=["GET"])
+def upload_page():
+    return render_template("upload.html", active="meetings")
 
 
 @app.route("/settings")
@@ -1618,6 +1625,24 @@ def dashboard_page():
     tab = request.path.strip("/")
     return render_template("dashboard.html",
                            active=tab if tab in ("brief", "schedule", "pulse") else "pulse")
+
+
+@app.route("/api/meetings-db")
+def api_meetings_db():
+    """Встречи из БД состояния — для экрана «Встречи» (счётчики, аудио, id)."""
+    if state_db is None:
+        return jsonify({"meetings": []})
+    with state_db.get_db() as con:
+        return jsonify({"meetings": state_db.meetings_all(con)})
+
+
+@app.route("/api/meeting-extras/<int:meeting_id>")
+def api_meeting_extras(meeting_id: int):
+    """Решения/нерешённое/риски/блокеры встречи из её файлов."""
+    m = _meeting_row(meeting_id)
+    if not m:
+        return jsonify({"error": "Встреча не найдена"}), 404
+    return jsonify({"meeting": m, "extras": _brief_extras(m)})
 
 
 @app.route("/api/schedule")

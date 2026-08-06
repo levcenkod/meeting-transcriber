@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Встречи — Транскрайбер</title>
+<link rel="icon" href="/static/favicon-32x32.png">
+<style>
+:root{
+  --ink:#0d1117;--ink2:#243040;--muted:#5b6b7c;--faint:#8b98a8;
+  --line:rgba(16,40,60,.13);--hair:rgba(16,40,60,.07);--solid:#fff;
+  --glass:rgba(255,255,255,.8);--accent:#0e7490;--green:#059669;
+  --amber:#b45309;--red:#e11d48;--violet:#7c3aed;
+  --grad:linear-gradient(115deg,#4f46e5,#0891b2 55%,#06b6d4);
+  --r:16px;--sh:0 1px 2px rgba(13,17,23,.05),0 6px 18px rgba(13,17,23,.05);
+  --sh2:0 2px 6px rgba(13,17,23,.06),0 16px 40px rgba(79,70,229,.10);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;color:var(--ink);
+  font-size:14.5px;line-height:1.55;background:#eef3fa;padding-bottom:90px}
+body:before{content:"";position:fixed;inset:0;z-index:-1;background:
+  radial-gradient(820px 620px at 12% -10%,rgba(79,70,229,.15),transparent 58%),
+  radial-gradient(760px 560px at 92% 2%,rgba(6,182,212,.15),transparent 60%),
+  linear-gradient(160deg,#f7fbfe,#eef3fa 45%,#e8eef7)}
+.wrap{max-width:1080px;margin:0 auto;padding:22px 16px}
+.head{margin-bottom:16px}
+.head h1{font-size:26px;font-weight:750;letter-spacing:-.03em;
+  background:linear-gradient(120deg,#0d1117 20%,#334155 60%,#0e7490);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.head p{color:var(--muted);font-size:13px;margin-top:3px}
+.cols{display:grid;grid-template-columns:1fr 340px;gap:14px;align-items:start}
+@media(max-width:960px){.cols{grid-template-columns:1fr}}
+.card{background:var(--glass);border:1px solid var(--line);border-radius:var(--r);
+  padding:16px 18px;box-shadow:var(--sh);margin-bottom:14px}
+.card>h2{font-size:11px;letter-spacing:.13em;text-transform:uppercase;font-weight:750;
+  margin-bottom:12px;background:var(--grad);-webkit-background-clip:text;
+  background-clip:text;color:transparent}
+.card>h2 .n{color:var(--faint);-webkit-text-fill-color:var(--faint);font-weight:600}
+.inp{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:11px;
+  font:inherit;font-size:13.5px;background:var(--solid);color:var(--ink)}
+.inp:focus{outline:2px solid rgba(79,70,229,.35);outline-offset:1px}
+.mcard{display:block;width:100%;text-align:left;border:1px solid var(--line);
+  border-radius:15px;padding:14px 16px;margin-bottom:9px;background:var(--solid);
+  cursor:pointer;font:inherit;transition:.18s}
+.mcard:hover{transform:translateY(-2px);box-shadow:var(--sh2);border-color:rgba(79,70,229,.25)}
+.mcard b{font-size:14.5px;display:block;margin:3px 0 4px}
+.mcard .sn{color:var(--muted);font-size:12.5px}
+.tc{font-variant-numeric:tabular-nums;color:var(--faint);font-size:12px}
+.muted{color:var(--muted)}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;
+  font-size:11.5px;font-weight:650;border:1px solid var(--line);color:var(--muted);background:var(--solid)}
+.chip.a{color:#0e7490;border-color:rgba(6,182,212,.3);background:rgba(6,182,212,.08);cursor:pointer}
+.chip.g{color:var(--green);border-color:rgba(5,150,105,.28);background:rgba(5,150,105,.08)}
+.chip.r{color:var(--red);border-color:rgba(225,29,72,.26);background:rgba(225,29,72,.07)}
+.btn{padding:9px 15px;border-radius:999px;border:1px solid var(--line);background:var(--solid);
+  font:inherit;font-size:13px;font-weight:600;color:var(--ink2);cursor:pointer;box-shadow:var(--sh)}
+.btn.p{background:var(--grad);color:#fff;border:0}
+.stb{padding:6px 11px;border-radius:999px;border:1px solid var(--line);background:var(--solid);
+  font:inherit;font-size:12px;color:var(--ink2);cursor:pointer}
+.stb:hover{border-color:rgba(79,70,229,.4)}
+.row{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+.hbar{margin-bottom:11px}
+.hl{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px}
+.hl b{font-variant-numeric:tabular-nums}
+.track{height:9px;border-radius:6px;background:rgba(16,40,60,.07);overflow:hidden}
+.track i{display:block;height:100%;background:var(--grad)}
+.box{border-radius:12px;padding:11px 14px;font-size:13.5px;margin-bottom:8px;line-height:1.5}
+.box.w{background:rgba(180,83,9,.08);border:1px solid rgba(180,83,9,.2)}
+.box.r{background:rgba(225,29,72,.07);border:1px solid rgba(225,29,72,.2)}
+.box.d{background:linear-gradient(120deg,rgba(79,70,229,.09),rgba(6,182,212,.07));
+  border:1px solid rgba(79,70,229,.18)}
+.li{padding:7px 0 7px 16px;position:relative;font-size:13.5px;border-bottom:1px solid var(--hair)}
+.li:last-child{border-bottom:0}
+.li:before{content:"";position:absolute;left:2px;top:14px;width:6px;height:6px;
+  border-radius:50%;background:var(--accent);opacity:.55}
+.prop{border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:9px;background:var(--solid)}
+.prop .q{font-size:12.5px;color:var(--faint);font-style:italic;margin-top:7px;
+  border-left:2px solid var(--line);padding-left:9px}
+.empty{text-align:center;padding:26px 16px;color:var(--faint)}
+.empty b{display:block;color:var(--ink2);font-size:15px;margin:6px 0 3px}
+.md{font-size:14px;line-height:1.65;color:var(--ink2)}
+.md h1,.md h2,.md h3{margin:14px 0 7px;font-size:15.5px;letter-spacing:-.01em;color:var(--ink)}
+.md h1{font-size:17px}
+.md ul{margin:6px 0 10px 20px}
+.md li{margin-bottom:3px}
+.md p{margin-bottom:8px}
+.md blockquote{border-left:3px solid var(--line);padding:4px 12px;color:var(--muted);margin:8px 0}
+.md code{background:rgba(16,40,60,.06);border-radius:5px;padding:1px 5px;font-size:12.5px}
+.md table{border-collapse:collapse;margin:8px 0;font-size:13px}
+.md td,.md th{border:1px solid var(--hair);padding:5px 9px}
+.toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(20px);
+  background:rgba(13,17,23,.93);color:#fff;padding:11px 18px;border-radius:13px;
+  font-size:13.5px;opacity:0;transition:.25s;z-index:99;pointer-events:none}
+.toast.on{opacity:1;transform:translateX(-50%)}
+#player-bar{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.95);
+  border-top:1px solid var(--line);padding:8px 16px;display:none;z-index:50;
+  backdrop-filter:blur(10px)}
+#player-bar.on{display:flex;gap:12px;align-items:center}
+#player-bar audio{flex:1;height:36px}
+#player-bar .pl-close{border:0;background:none;font-size:16px;cursor:pointer;color:var(--muted)}
+details.files summary{cursor:pointer;color:var(--muted);font-size:13px}
+details.files a{color:var(--accent);text-decoration:none;font-size:13px}
+details.files .li:before{display:none}
+details.files .li{padding-left:0}
+</style>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="with-shell">
+{% include "_nav.html" %}
+<div class="wrap"><div id="app"><div class="empty">Загружаю…</div></div></div>
+
+<div id="player-bar">
+  <audio id="player" controls preload="none"></audio>
+  <button class="pl-close" onclick="closePlayer()" title="Закрыть">✕</button>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let toastT;
+function toast(m){const t=$('toast');t.textContent=m;t.classList.add('on');
+  clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove('on'),2800)}
+const fd=s=>{if(!s)return '—';const d=new Date(s+'T00:00:00');
+  return d.toLocaleDateString('ru-RU',{day:'numeric',month:'short'})};
+const mmss=t=>t==null?'':Math.floor(t/60)+':'+String(t%60).padStart(2,'0');
+
+/* Мини-markdown без внешних библиотек (докер живёт офлайн) */
+function md(src){
+  const lines=String(src||'').split(/\r?\n/);let out='',inUl=false,inBq=false;
+  const inline=s=>esc(s)
+    .replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>')
+    .replace(/`([^`]+)`/g,'<code>$1</code>')
+    .replace(/\[\[([^\]]+)\]\]/g,'<span style="color:var(--accent)">$1</span>');
+  const closeAll=()=>{if(inUl){out+='</ul>';inUl=false}if(inBq){out+='</blockquote>';inBq=false}};
+  for(const raw of lines){
+    const l=raw.trimEnd();
+    const h=l.match(/^(#{1,4})\s+(.*)/);
+    if(h){closeAll();const n=Math.min(h[1].length,3);out+=`<h${n}>${inline(h[2])}</h${n}>`;continue}
+    if(/^\s*[-*]\s+/.test(l)){if(!inUl){closeAll();out+='<ul>';inUl=true}
+      out+='<li>'+inline(l.replace(/^\s*[-*]\s+/,''))+'</li>';continue}
+    if(/^>\s?/.test(l)){if(!inBq){closeAll();out+='<blockquote>';inBq=true}
+      out+=inline(l.replace(/^>\s?/,''))+'<br>';continue}
+    if(/^\s*\|.*\|\s*$/.test(l)){closeAll();
+      if(/^\s*\|[\s:|-]+\|\s*$/.test(l))continue;
+      out+='<table><tr>'+l.split('|').slice(1,-1).map(c=>'<td>'+inline(c.trim())+'</td>').join('')+'</tr></table>';continue}
+    if(l==='---'||l===''){closeAll();continue}
+    closeAll();out+='<p>'+inline(l)+'</p>';
+  }
+  closeAll();return out.replace(/<\/table><table>/g,'');
+}
+
+let LIST=[], SERIES=[], CUR=null, q='';
+
+async function loadList(){
+  const [r1,r2]=await Promise.all([fetch('/api/meetings-db'),fetch('/api/schedule')]);
+  LIST=(await r1.json()).meetings||[];
+  SERIES=(await r2.json()).series||[];
+  route();
+}
+function route(){
+  const m=(location.hash.match(/^#m=(\d+)$/)||[])[1];
+  if(m){openMeeting(+m);return}
+  renderList();
+}
+window.addEventListener('hashchange',route);
+
+function renderList(){
+  CUR=null;
+  const detailed=LIST.filter(m=>m.n_actions>0).length;
+  const needle=q.trim().toLowerCase();
+  const f=LIST.filter(m=>!needle
+    ||m.title.toLowerCase().includes(needle)
+    ||(m.category||'').toLowerCase().includes(needle)
+    ||(m.subcategory||'').toLowerCase().includes(needle)
+    ||(m.stem||'').toLowerCase().includes(needle));
+  const mx=Math.max(...SERIES.map(s=>s.n),1);
+  $('app').innerHTML=`
+  <div class="head"><h1>Встречи</h1>
+    <p>${LIST.length} обработанных планёрок · ${detailed} с полным разбором</p></div>
+  <div class="row" style="margin-bottom:14px">
+    <input class="inp" style="flex:1;min-width:220px" id="search"
+      placeholder="Поиск по названию, направлению, файлу…" value="${esc(q)}">
+    <a class="btn p" href="/upload" style="text-decoration:none">＋ Загрузить запись</a>
+  </div>
+  <div class="cols"><div id="mlist">
+    ${f.length?f.slice(0,40).map(m=>`<button class="mcard" onclick="location.hash='m='+${m.id}">
+      <span class="tc">${fd(m.date)} · ${esc(m.category||'')}${m.subcategory?' › '+esc(m.subcategory):''}${m.audio?' · 🎧':''}</span>
+      <b>${esc(m.title)}</b>
+      <span class="sn">задач ${m.n_actions||0} · решений ${m.n_decisions||0}${m.n_actions?'':' · только расшифровка'}</span>
+    </button>`).join(''):'<div class="empty">🔍<b>Ничего не нашлось</b>Попробуйте другой запрос</div>'}
+    ${f.length>40?`<p class="muted">…и ещё ${f.length-40}</p>`:''}
+  </div><div>
+    <div class="card"><h2>По направлениям</h2>
+      ${SERIES.map(s=>`<div class="hbar"><div class="hl"><span>${esc(s.series)}</span><b>${s.n}</b></div>
+        <div class="track"><i style="width:${s.n/mx*100}%"></i></div></div>`).join('')}
+    </div>
+    <div class="card"><h2>Как сюда попадают встречи</h2>
+      <div class="li">Кинуть файл на <a href="/upload" style="color:var(--accent)">странице загрузки</a></div>
+      <div class="li">Или бросить в папку <code>inbox/</code> — обработается само</div>
+    </div>
+  </div></div>`;
+  const s=$('search');
+  s.addEventListener('input',()=>{q=s.value;renderList();
+    const s2=$('search');s2.focus();s2.setSelectionRange(s2.value.length,s2.value.length)});
+}
+
+async function openMeeting(id){
+  CUR=id;
+  $('app').innerHTML='<div class="empty">Загружаю встречу…</div>';
+  const meta=LIST.find(x=>x.id===id);
+  if(!meta){location.hash='';return}
+  let inboxData={},extras={},fileData={};
+  try{
+    const [r1,r2,r3]=await Promise.all([
+      fetch('/api/inbox/'+id),
+      fetch('/api/meeting-extras/'+id),
+      fetch(`/meeting?dir=${encodeURIComponent(meta.dir)}&stem=${encodeURIComponent(meta.stem)}`),
+    ]);
+    inboxData=r1.ok?await r1.json():{};
+    extras=r2.ok?(await r2.json()).extras||{}:{};
+    fileData=r3.ok?await r3.json():{};
+  }catch(e){}
+  const props=inboxData.proposals||[];
+  const tasks=props.filter(p=>p.kind==='task'&&p.status!=='rejected');
+  const minors=props.filter(p=>p.kind!=='task'&&p.status!=='rejected');
+  const pending=tasks.filter(p=>p.status!=='sent').length;
+  const attendees=((inboxData.meeting||meta).attendees)||[];
+  const audio=inboxData.audio_url||'';
+  window._audioUrl=audio;
+  $('app').innerHTML=`
+  <div class="head">
+    <button class="btn" style="margin-bottom:10px" onclick="location.hash=''">← Встречи</button>
+    <h1>${esc(meta.title)}</h1>
+    <p>${fd(meta.date)} · ${esc(meta.category||'')}${meta.subcategory?' › '+esc(meta.subcategory):''}</p>
+  </div>
+  <div class="cols"><div>
+    <div class="card"><h2>Коротко</h2>
+      ${audio?`<div class="row" style="margin-bottom:10px">
+        <button class="chip a" onclick="playAt(0)">🎧 Слушать запись</button></div>`:''}
+      <div class="md">${fileData.summary_md?md(stripFm(fileData.summary_md)):'<div class="empty">Summary не найден</div>'}</div>
+      <div class="row" style="margin-top:11px">
+        <button class="btn" onclick="copySum()">📋 Скопировать</button>
+        ${pending?`<a class="btn p" style="text-decoration:none" href="/inbox?m=${id}">→ В приёмку (${pending})</a>`:''}
+      </div></div>
+    ${(extras.decisions||[]).length?`<div class="card"><h2>Решения <span class="n">${extras.decisions.length}</span></h2>
+      ${extras.decisions.map(d=>`<div class="li">${esc(d)}</div>`).join('')}</div>`:''}
+    <div class="card"><h2>Задачи из встречи <span class="n">${tasks.length}</span></h2>
+      ${tasks.length?tasks.map(p=>`<div class="li"><b>${esc(p.text)}</b>
+        <div class="tc">${esc(p.owner||'не назначен')}${p.section?' · '+esc(p.section):''}
+          ${p.status==='sent'?' · <span class="chip g" style="font-size:10.5px">в Trello</span>':''}
+          ${p.t_sec!=null?` · <button class="chip a" style="font-size:11px" onclick="playAt(${p.t_sec})">🎧 ${mmss(p.t_sec)}</button>`:''}</div>
+      </div>`).join(''):'<div class="empty">Задач не извлечено</div>'}</div>
+    ${minors.length?`<div class="card"><h2>Мелочи <span class="n">${minors.length}</span></h2>
+      <div class="box d">Обязательством не были. Лежат здесь и ничего не требуют.</div>
+      ${minors.map(p=>`<div class="prop">
+        <div class="row" style="justify-content:space-between"><b style="font-size:13.5px">${esc(p.text)}</b>
+          <span class="chip ${p.confidence==='low'?'r':''}">${p.confidence==='low'?'низкая':'средняя'}</span></div>
+        <div class="tc" style="margin-top:3px">${esc(p.owner||'не назначен')}${p.context?' · '+esc(String(p.context).slice(0,90)):''}</div>
+        ${p.quote?`<div class="q">«${esc(p.quote)}»</div>`:''}
+        <div class="row" style="margin-top:8px">
+          <button class="stb" onclick="promote(${p.id},${id})">＋ В приёмку</button></div>
+      </div>`).join('')}</div>`:''}
+  </div><div>
+    ${(extras.blockers||[]).length?`<div class="card"><h2>Блокеры</h2>
+      ${extras.blockers.map(b=>`<div class="box r">⛔ ${esc(b)}</div>`).join('')}</div>`:''}
+    ${(extras.risks||[]).length?`<div class="card"><h2>Риски</h2>
+      ${extras.risks.map(b=>`<div class="box w">⚠️ ${esc(b)}</div>`).join('')}</div>`:''}
+    ${(extras.open_questions||[]).length?`<div class="card"><h2>Не решено</h2>
+      ${extras.open_questions.map(b=>`<div class="box d">❓ ${esc(b)}</div>`).join('')}</div>`:''}
+    <div class="card"><h2>Участники</h2>
+      ${attendees.length?attendees.map(a=>`<span class="chip" style="margin:0 4px 6px 0">${esc(a)}</span>`).join('')
+        :'<span class="muted" style="font-size:13px">не определены</span>'}</div>
+    ${(fileData.primary||[]).length||(fileData.secondary||[]).length?`<div class="card"><h2>Файлы</h2>
+      <details class="files"><summary>Показать (${(fileData.primary||[]).length+(fileData.secondary||[]).length})</summary>
+        <div style="margin-top:8px">${[...(fileData.primary||[]),...(fileData.secondary||[])].map(f=>
+          `<div class="li"><a href="/download/${encodeURIComponent(f.path)}" download>${esc(f.name)}</a>
+           <span class="tc"> · ${(f.size/1024).toFixed(0)} КБ</span></div>`).join('')}</div>
+      </details></div>`:''}
+  </div></div>`;
+  window._summaryText=fileData.summary_md?stripFm(fileData.summary_md):'';
+}
+function stripFm(s){
+  if(s.startsWith('---')){const e=s.indexOf('\n---',3);if(e!==-1)return s.slice(e+4).replace(/^\s+/,'')}
+  return s;
+}
+function copySum(){
+  navigator.clipboard.writeText(window._summaryText||'')
+    .then(()=>toast('Summary скопирован')).catch(()=>toast('Не удалось скопировать'));
+}
+async function promote(pid,meetingId){
+  const r=await fetch('/api/proposal/'+pid,{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'task'})});
+  if(r.ok){toast('Перенесено в приёмку');location.href='/inbox?m='+meetingId}
+  else toast('Ошибка');
+}
+function playAt(sec){
+  if(!window._audioUrl){toast('Аудио этой встречи не сохранено');return}
+  const bar=$('player-bar'), a=$('player');
+  if(a.getAttribute('src')!==window._audioUrl) a.src=window._audioUrl;
+  bar.classList.add('on');
+  const seek=()=>{try{a.currentTime=Math.max(0,sec-2);a.play()}catch(e){}};
+  if(a.readyState>=1) seek(); else a.addEventListener('loadedmetadata',seek,{once:true});
+}
+function closePlayer(){const a=$('player');try{a.pause()}catch(e){};$('player-bar').classList.remove('on')}
+
+loadList();
+</script>
+</body>
+</html>
