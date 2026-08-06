@@ -93,14 +93,14 @@ body:before{content:"";position:fixed;inset:0;z-index:-1;background:
 select.inp{max-width:220px}
 input[type="date"].inp{max-width:160px}
 </style>
+<link rel="stylesheet" href="/static/app.css">
 </head>
-<body>
+<body class="with-shell">
+{% include "_nav.html" %}
 <div class="wrap">
   <div class="top">
     <h1>Приёмка</h1>
     <span class="sub" id="head-sub">задачи из планёрок → человек → Trello</span>
-    <a class="back" href="/pulse" style="margin-left:auto">📈 Пульс</a>
-    <a class="back" href="/" style="margin-left:0">← Транскрайбер</a>
   </div>
 
   <div class="tabs" id="tabs"></div>

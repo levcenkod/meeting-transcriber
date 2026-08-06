@@ -95,17 +95,14 @@ table.cmp td,table.cmp th{padding:7px 8px;border-bottom:1px solid var(--hair);te
 table.cmp th{font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
 .wrap-x{overflow-x:auto}
 </style>
+<link rel="stylesheet" href="/static/app.css">
 </head>
-<body>
+<body class="with-shell">
+{% include "_nav.html" %}
 <div class="wrap">
   <div class="top">
     <h1 id="page-title">Пульс</h1>
-    <div class="links">
-      <a href="/inbox">📥 Приёмка</a>
-      <a href="/">🎙 Транскрайбер</a>
-    </div>
   </div>
-  <div class="tabs" id="tabs"></div>
   <div id="app"><div class="empty">Загружаю…</div></div>
 </div>
 <div class="toast" id="toast"></div>
@@ -121,18 +118,22 @@ const fd=s=>{if(!s)return '—';const d=new Date(s+'T00:00:00');
   return d.toLocaleDateString('ru-RU',{day:'numeric',month:'short'})};
 const mmss=t=>t==null?'':Math.floor(t/60)+':'+String(t%60).padStart(2,'0');
 
-const TABS=[{k:'brief',t:'⏱ Брифинг'},{k:'schedule',t:'📅 Расписание'},{k:'pulse',t:'📈 Пульс'}];
+const TABS=[{k:'brief',t:'Брифинг'},{k:'schedule',t:'Расписание'},{k:'pulse',t:'Пульс'}];
 let TAB=(location.pathname.replace('/','')||'pulse');
 if(!TABS.some(x=>x.k===TAB)) TAB='pulse';
 let briefCat=null, pulseDays=90;
 
 function renderTabs(){
-  $('tabs').innerHTML=TABS.map(x=>
-    `<button class="tab" aria-selected="${x.k===TAB}" onclick="go('${x.k}')">${x.t}</button>`).join('');
-  $('page-title').textContent=TABS.find(x=>x.k===TAB).t.replace(/^\S+\s/,'');
-  document.title=TABS.find(x=>x.k===TAB).t.replace(/^\S+\s/,'')+' — Транскрайбер';
+  const t=TABS.find(x=>x.k===TAB).t;
+  $('page-title').textContent=t;
+  document.title=t+' — Транскрайбер';
 }
-function go(tab){TAB=tab;history.replaceState(null,'','/'+tab);renderTabs();load()}
+/* Навигация — настоящими переходами, чтобы сайдбар подсвечивал верный пункт */
+function go(tab){location.href='/'+tab}
+function openBrief(cat){
+  try{sessionStorage.setItem('briefCat',cat)}catch(e){}
+  location.href='/brief';
+}
 
 async function load(){
   $('app').innerHTML='<div class="empty">Загружаю…</div>';
@@ -146,6 +147,9 @@ async function load(){
 /* ═══ БРИФИНГ ═══ */
 let BRIEF=null;
 async function loadBrief(){
+  if(!briefCat){
+    try{briefCat=sessionStorage.getItem('briefCat');sessionStorage.removeItem('briefCat')}catch(e){}
+  }
   const q=briefCat?('?category='+encodeURIComponent(briefCat)):'';
   const r=await fetch('/api/brief'+q); BRIEF=await r.json();
   if(!BRIEF.series||!BRIEF.series.length){
@@ -213,7 +217,7 @@ async function loadSchedule(){
       <div><b style="font-size:15px">${esc(s.series)}</b>
         <div class="muted" style="font-size:12.5px">${s.n} планёрок · ${s.per_week} в неделю ·
           последняя ${fd(s.last_date)} (${s.days_since} дн. назад)</div></div>
-      <button class="btn" onclick="briefCat='${esc(s.series)}';go('brief')">Брифинг →</button>
+      <button class="btn" onclick="openBrief('${esc(s.series)}')">Брифинг →</button>
     </div>
     <div class="chipbar" style="margin:10px 0 0">
       ${s.days_since>14?`<span class="chip r static">🔇 не собирались ${s.days_since} дн.</span>`

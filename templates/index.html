@@ -766,8 +766,10 @@
       border-radius: var(--radius-sm);
     }
   </style>
+  <link rel="stylesheet" href="/static/app.css">
 </head>
-<body>
+<body class="with-shell">
+{% include "_nav.html" %}
 
 <header>
   <div class="brand">
@@ -778,12 +780,6 @@
     </div>
   </div>
   <div class="header-actions">
-    <a class="archive-btn" href="/inbox" title="Приёмка задач: правка, сроки, отправка в Trello" style="text-decoration:none;">
-      📥 <span>Приёмка</span>
-    </a>
-    <a class="archive-btn" href="/pulse" title="Брифинг, расписание и пульс по всем планёркам" style="text-decoration:none;">
-      📈 <span>Пульс</span>
-    </a>
     <button class="archive-btn" id="archive-btn" title="Прошлые планёрки">
       📚 <span>Архив</span>
     </button>

@@ -1,0 +1,29 @@
+<!-- Общий сайдбар (макет transcriber-v3.html).
+     Роут передаёт active: brief / inbox / meetings / schedule / pulse -->
+<aside class="shell-side">
+  <a class="shell-brand" href="/">
+    <span class="shell-mark"><i></i><i></i><i></i><i></i></span>
+    <span class="shell-bname">Транскрайбер<small>ВАШИ ПЛАНЁРКИ</small></span>
+  </a>
+  <nav class="shell-nav">
+    <a href="/brief"    {% if active == 'brief'    %}aria-current="page"{% endif %}><span class="ic">⏱</span><span class="btext">Брифинг</span></a>
+    <a href="/inbox"    {% if active == 'inbox'    %}aria-current="page"{% endif %}><span class="ic">📥</span><span class="btext">Приёмка</span><span class="shell-cnt" id="shell-inbox-cnt"></span></a>
+    <a href="/"         {% if active == 'meetings' %}aria-current="page"{% endif %}><span class="ic">🗂</span><span class="btext">Встречи</span></a>
+    <a href="/schedule" {% if active == 'schedule' %}aria-current="page"{% endif %}><span class="ic">📅</span><span class="btext">Расписание</span></a>
+    <a href="/pulse"    {% if active == 'pulse'    %}aria-current="page"{% endif %}><span class="ic">📈</span><span class="btext">Пульс</span></a>
+  </nav>
+  <div class="shell-foot">
+    <a href="/settings">⚙ Настройки</a>
+  </div>
+</aside>
+<script>
+(function(){
+  try{
+    fetch('/api/inbox').then(r=>r.json()).then(j=>{
+      var n=(j.meetings||[]).reduce(function(s,m){return s+(m.n_pending||0)},0);
+      var el=document.getElementById('shell-inbox-cnt');
+      if(el&&n>0)el.textContent=n>99?'99+':String(n);
+    }).catch(function(){});
+  }catch(e){}
+})();
+</script>

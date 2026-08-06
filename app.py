@@ -747,7 +747,7 @@ def _pipeline(job_id: str, source_path: Path, source_kind: str, stem: str,
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", active="meetings")
 
 
 @app.route("/settings")
@@ -1303,7 +1303,7 @@ def _meeting_row(meeting_id: int) -> dict | None:
 
 @app.route("/inbox")
 def inbox_page():
-    return render_template("inbox.html")
+    return render_template("inbox.html", active="inbox")
 
 
 @app.route("/api/people", methods=["GET", "POST"])
@@ -1615,7 +1615,9 @@ def _brief_extras(m: dict) -> dict:
 @app.route("/schedule")
 @app.route("/pulse")
 def dashboard_page():
-    return render_template("dashboard.html")
+    tab = request.path.strip("/")
+    return render_template("dashboard.html",
+                           active=tab if tab in ("brief", "schedule", "pulse") else "pulse")
 
 
 @app.route("/api/schedule")

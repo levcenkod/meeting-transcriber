@@ -1,0 +1,91 @@
+/* app.css — общий каркас интерфейса по макету transcriber-v3.html:
+   тёмный стеклянный сайдбар, эквалайзер-марка, единая навигация.
+   Подключается ПОСЛЕ собственных стилей страницы; трогает только
+   сайдбар и отступ контента (body.with-shell), ничего внутри страниц. */
+
+:root{
+  --sh-sidew:210px;
+  --sh-grad:linear-gradient(115deg,#4f46e5,#0891b2 55%,#06b6d4);
+}
+
+body.with-shell{margin:0}
+body.with-shell>header,
+body.with-shell>main,
+body.with-shell>.wrap{margin-left:var(--sh-sidew)}
+@media(max-width:720px){
+  body.with-shell>header,
+  body.with-shell>main,
+  body.with-shell>.wrap{margin-left:0}
+  body.with-shell{padding-top:56px}
+}
+
+/* ── сайдбар ── */
+.shell-side{position:fixed;left:0;top:0;bottom:0;width:var(--sh-sidew);z-index:80;
+  display:flex;flex-direction:column;padding:16px 11px;overflow:hidden;
+  background:linear-gradient(180deg,rgba(17,26,35,.86),rgba(13,17,23,.9));
+  backdrop-filter:saturate(160%) blur(18px);-webkit-backdrop-filter:saturate(160%) blur(18px);
+  border-right:1px solid rgba(255,255,255,.09);
+  box-shadow:1px 0 24px rgba(13,17,23,.10)}
+.shell-side:before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.35;
+  background:radial-gradient(400px 300px at 20% 0%,rgba(15,107,125,.5),transparent 65%),
+             radial-gradient(300px 260px at 90% 100%,rgba(138,109,59,.35),transparent 60%)}
+.shell-side>*{position:relative}
+
+.shell-brand{display:flex;align-items:center;gap:10px;padding:4px 6px 16px;
+  text-decoration:none;border:0;background:none}
+.shell-mark{width:34px;height:34px;flex:0 0 34px;border-radius:10px;
+  background:linear-gradient(140deg,rgba(79,70,229,.6),rgba(10,30,45,.92));
+  display:flex;align-items:flex-end;justify-content:center;gap:2px;padding:7px 6px;
+  box-shadow:0 4px 12px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.12)}
+.shell-mark i{width:3px;border-radius:2px;
+  background:linear-gradient(180deg,#67e8f9,#a78bfa);
+  animation:sh-eq 1.1s ease-in-out infinite;transform-origin:bottom}
+.shell-mark i:nth-child(1){height:40%;animation-delay:0s}
+.shell-mark i:nth-child(2){height:75%;animation-delay:.15s}
+.shell-mark i:nth-child(3){height:55%;animation-delay:.3s}
+.shell-mark i:nth-child(4){height:85%;animation-delay:.45s}
+@keyframes sh-eq{0%,100%{transform:scaleY(.5)}50%{transform:scaleY(1)}}
+@media(prefers-reduced-motion:reduce){.shell-mark i{animation:none}}
+.shell-bname{color:#fff;font-weight:700;font-size:15px;letter-spacing:-.02em;line-height:1.2}
+.shell-bname small{display:block;color:rgba(255,255,255,.5);font-weight:500;
+  font-size:10.5px;letter-spacing:.06em}
+
+.shell-nav{display:flex;flex-direction:column;gap:3px}
+.shell-nav a{display:flex;align-items:center;gap:10px;padding:9px 11px;
+  border-radius:11px;color:rgba(255,255,255,.68);font-size:13.5px;
+  text-decoration:none;position:relative;white-space:nowrap;transition:.15s}
+.shell-nav a:hover{background:rgba(255,255,255,.07);color:#fff}
+.shell-nav a[aria-current="page"]{color:#fff;font-weight:600;
+  background:linear-gradient(90deg,rgba(255,255,255,.16),rgba(255,255,255,.05))}
+.shell-nav a[aria-current="page"]:before{content:"";position:absolute;left:-11px;
+  width:3px;height:20px;border-radius:0 3px 3px 0;
+  background:linear-gradient(180deg,#06b6d4,#7c3aed)}
+.shell-nav .ic{width:18px;text-align:center;flex:0 0 18px}
+.shell-cnt{margin-left:auto;background:rgba(225,29,72,.9);color:#fff;
+  font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:9px;
+  font-variant-numeric:tabular-nums}
+.shell-cnt:empty{display:none}
+
+.shell-foot{margin-top:auto;display:flex;flex-direction:column;gap:6px;padding:0 6px}
+.shell-foot a{color:rgba(255,255,255,.55);font-size:12px;text-decoration:none;
+  padding:7px 6px;border-radius:9px}
+.shell-foot a:hover{background:rgba(255,255,255,.07);color:#fff}
+
+/* фиксированные элементы страниц не должны заезжать под сайдбар */
+body.with-shell #player-bar{left:var(--sh-sidew)}
+@media(max-width:720px){body.with-shell #player-bar{left:0}}
+
+/* ── мобильный: сайдбар складывается в верхнюю панель ── */
+@media(max-width:720px){
+  .shell-side{right:0;bottom:auto;width:auto;height:56px;flex-direction:row;
+    align-items:center;padding:8px 10px;gap:10px;
+    border-right:0;border-bottom:1px solid rgba(255,255,255,.09)}
+  .shell-brand{padding:0}
+  .shell-bname small{display:none}
+  .shell-nav{flex-direction:row;overflow-x:auto;scrollbar-width:none}
+  .shell-nav::-webkit-scrollbar{display:none}
+  .shell-nav a{padding:7px 9px;font-size:12.5px}
+  .shell-nav a[aria-current="page"]:before{display:none}
+  .shell-nav .btext{display:none}
+  .shell-foot{display:none}
+}
