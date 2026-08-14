@@ -43,6 +43,21 @@ services:
     # nvidia-runtime и не стартует на CPU-сервере. На машинах с GPU
     # start.bat подключает оба файла автоматически.
 
+  # Телеграм-воронка: принимает войсы/аудио от разрешённых отправителей
+  # и кладёт в inbox/. Только исходящие запросы — портов не открывает.
+  # Без TELEGRAM_BOT_TOKEN тихо спит, лишним не будет ни на одной машине.
+  tg-ingest:
+    image: meeting-transcriber
+    entrypoint: ["python", "/scripts/tg_ingest.py"]
+    volumes:
+      - ./inbox:/inbox
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
+    env_file: .env
+    restart: unless-stopped
+    depends_on:
+      - meeting-transcriber
+
 volumes:
   hf_cache:
   app_data:

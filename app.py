@@ -1858,6 +1858,32 @@ def _ingest_inbox_file(path: Path) -> None:
     success = _jobs.get(job_id, {}).get("status") == "done"
     _move_processed(path, success)
 
+    # Замыкаем телеграм-воронку: «кинул войс → получил „обработано, N задач“».
+    if success and telegram_notify is not None and telegram_notify.configured():
+        try:
+            cat_slug = _slugify_filename(category, 40) or "Общее"
+            sub_slug = _slugify_filename(subcategory, 40) or "Без подкатегории"
+            meta = _read_meta(OUTPUT_DIR / cat_slug / sub_slug / f"{stem}_meta.json") or {}
+            mid, n_tasks = None, 0
+            if state_db is not None:
+                with state_db.get_db() as con:
+                    row = con.execute(
+                        "SELECT id FROM meeting WHERE dir = ? AND stem = ?",
+                        (f"{cat_slug}/{sub_slug}", stem)).fetchone()
+                    if row:
+                        mid = row["id"]
+                        n_tasks = con.execute(
+                            "SELECT COUNT(*) c FROM proposal WHERE meeting_id = ? "
+                            "AND kind = 'task' AND status = 'proposed'",
+                            (mid,)).fetchone()["c"]
+            base = (os.environ.get("APP_PUBLIC_URL") or "").rstrip("/")
+            link = f"\n{base}/inbox?m={mid}" if base and mid else ""
+            telegram_notify.send(
+                f"✅ Обработано: {meta.get('title') or stem}\n"
+                f"Задач на приёмку: {n_tasks}{link}")
+        except Exception as exc:
+            print(f"[WATCH] Уведомление об обработке: {exc}", flush=True)
+
 
 def _watch_scanner() -> None:
     """Periodically scan /inbox and enqueue new, fully-written files."""
