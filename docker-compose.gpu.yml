@@ -1,0 +1,13 @@
+# Подключение NVIDIA GPU. Использовать ВМЕСТЕ с базовым файлом:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+# start.bat делает это сам, если на машине есть nvidia-smi.
+# На CPU-сервере этот файл не подключается вовсе (ADR-002 / переезд).
+services:
+  meeting-transcriber:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

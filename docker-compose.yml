@@ -36,14 +36,9 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
-    # GPU (NVIDIA). Если GPU нет — блок deploy игнорируется
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # GPU-блок вынесен в docker-compose.gpu.yml: с ним compose ТРЕБУЕТ
+    # nvidia-runtime и не стартует на CPU-сервере. На машинах с GPU
+    # start.bat подключает оба файла автоматически.
 
 volumes:
   hf_cache:
