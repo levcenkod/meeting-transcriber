@@ -88,6 +88,9 @@ body:before{content:"";position:fixed;inset:0;z-index:-1;background:
 #player-bar.on{display:flex;gap:12px;align-items:center}
 #player-bar audio{flex:1;height:36px}
 #player-bar .pl-close{border:0;background:none;font-size:16px;cursor:pointer;color:var(--muted)}
+.job-pulse{font-size:16px;animation:jobp 1.6s ease-in-out infinite}
+@keyframes jobp{0%,100%{opacity:1}50%{opacity:.35}}
+@media(prefers-reduced-motion:reduce){.job-pulse{animation:none}}
 details.files summary{cursor:pointer;color:var(--muted);font-size:13px}
 details.files a{color:var(--accent);text-decoration:none;font-size:13px}
 details.files .li:before{display:none}
@@ -119,13 +122,35 @@ const mmss=t=>t==null?'':Math.floor(t/60)+':'+String(t%60).padStart(2,'0');
 
 /* Рендер markdown и копирование — в общем /static/md.js */
 
-let LIST=[], SERIES=[], CUR=null, q='';
+let LIST=[], SERIES=[], RUNNING=[], CUR=null, q='';
+let pollT=null;
 
 async function loadList(){
-  const [r1,r2]=await Promise.all([fetch('/api/meetings-db'),fetch('/api/schedule')]);
+  const [r1,r2,r3]=await Promise.all([
+    fetch('/api/meetings-db'),fetch('/api/schedule'),fetch('/jobs')]);
   LIST=(await r1.json()).meetings||[];
   SERIES=(await r2.json()).series||[];
+  RUNNING=((r3.ok?await r3.json():{}).jobs||[])
+    .filter(j=>j.status==='running'||j.status==='pending');
+  // Пока что-то варится — обновляемся сами; закончилось → встреча появится в списке
+  clearTimeout(pollT);
+  if(RUNNING.length){
+    pollT=setTimeout(()=>{
+      if(document.activeElement&&document.activeElement.id==='search')
+        {pollT=setTimeout(loadList,30000);return}
+      if(!CUR) loadList();
+    },30000);
+  }
   route();
+}
+function jobLine(j){
+  const min=j.started_at?Math.max(1,Math.round(Date.now()/1e3/60-j.started_at/60)):'?';
+  return `<div style="display:flex;gap:10px;align-items:center;padding:4px 0">
+    <span class="job-pulse">⏳</span>
+    <div style="flex:1"><b style="font-size:13.5px">${esc(j.filename||'запись')}</b>
+      <div class="tc">${esc(j.category||'')} · ${j.status==='running'?`обрабатывается ${min} мин`:'в очереди'}
+        · на CPU это занимает примерно столько же, сколько длится запись</div></div>
+  </div>`;
 }
 function route(){
   const m=(location.hash.match(/^#m=(\d+)$/)||[])[1];
@@ -153,6 +178,7 @@ function renderList(){
     <a class="btn p" href="/upload" style="text-decoration:none">＋ Загрузить запись</a>
   </div>
   <div class="cols"><div id="mlist">
+    ${RUNNING.length?`<div class="box d">${RUNNING.map(jobLine).join('')}</div>`:''}
     ${f.length?f.slice(0,40).map(m=>`<button class="mcard" onclick="location.hash='m='+${m.id}">
       <span class="tc">${fd(m.date)} · ${esc(m.category||'')}${m.subcategory?' › '+esc(m.subcategory):''}${m.audio?' · 🎧':''}</span>
       <b>${esc(m.title)}</b>
