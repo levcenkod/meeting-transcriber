@@ -44,12 +44,34 @@ body:before{content:"";position:fixed;inset:0;z-index:-1;background:
   border:1px solid rgba(79,70,229,.18)}
 .box.g{background:rgba(5,150,105,.07);border:1px solid rgba(5,150,105,.2)}
 .box.r{background:rgba(225,29,72,.07);border:1px solid rgba(225,29,72,.2)}
-.prop{border:1px solid var(--line);border-radius:14px;padding:13px 15px;margin-bottom:10px;
-  background:var(--solid);transition:.15s}
-.prop.off{opacity:.45}
-.prop.sent{opacity:.6;border-color:rgba(5,150,105,.35)}
+.prop{border:1px solid var(--line);border-left:4px solid var(--line);border-radius:14px;
+  padding:13px 15px;margin-bottom:10px;background:var(--solid);transition:.15s}
+.prop.ready{border-left-color:var(--green);
+  background:linear-gradient(120deg,rgba(5,150,105,.05),var(--solid) 40%)}
+.prop.needs{border-left-color:var(--amber)}
+.prop.attention{border-color:rgba(225,29,72,.5);border-left-color:var(--red);
+  animation:shake .3s}
+@keyframes shake{25%{transform:translateX(-3px)}75%{transform:translateX(3px)}}
+.prop.off{opacity:.45;border-left-color:var(--line)}
+.prop.sent{opacity:.6;border-color:rgba(5,150,105,.35);border-left-color:var(--green)}
 .prop .q{font-size:12.5px;color:var(--faint);font-style:italic;margin-top:8px;
   border-left:2px solid var(--line);padding-left:9px}
+.tinput{width:100%;border:1px solid transparent;border-radius:10px;font:inherit;
+  font-size:15px;font-weight:650;color:var(--ink);background:transparent;
+  padding:6px 9px;margin-left:-9px;transition:.15s}
+.tinput:hover{border-color:var(--hair);background:var(--solid)}
+.tinput:focus{outline:0;border-color:var(--line);background:var(--solid);
+  box-shadow:0 0 0 3px rgba(79,70,229,.12);font-weight:500}
+.ready-chip{font-size:11px;font-weight:700;letter-spacing:.04em}
+.sticky-send{position:sticky;top:8px;z-index:5;display:flex;gap:10px;align-items:center;
+  flex-wrap:wrap;background:rgba(255,255,255,.92);backdrop-filter:blur(8px);
+  border:1px solid var(--line);border-radius:14px;padding:10px 14px;margin-bottom:12px;
+  box-shadow:var(--sh)}
+.sticky-send .bar{flex:1;min-width:120px;height:8px;border-radius:6px;
+  background:rgba(16,40,60,.08);overflow:hidden}
+.sticky-send .bar i{display:block;height:100%;border-radius:6px;
+  background:linear-gradient(90deg,#34d399,#059669);transition:width .3s}
+@media(max-width:720px){.sticky-send{top:64px}}
 .row{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
 .inp{padding:8px 11px;border:1px solid var(--line);border-radius:10px;font:inherit;
   font-size:13.5px;background:var(--solid);color:var(--ink)}
@@ -226,19 +248,20 @@ async function applySpeakers(){
 
 // ── Отправка в Trello ───────────────────────────────────────────────────────
 async function sendAll(){
-  const ready = DATA.proposals.filter(p=>p.kind==='task'
-    && p.status!=='sent' && p.status!=='rejected'
-    && (p.criterion||'').trim() && p.due);
-  if(!ready.length){toast('Нет готовых задач: нужны срок и критерий');return}
+  window._attention=new Set();
+  const ready = DATA.proposals.filter(isReady);
+  if(!ready.length){toast('Нет готовых задач: нужен срок и критерий');return}
   const btn=$('send-btn'); btn.disabled=true; btn.textContent='Отправляю…';
   const r=await fetch(`/api/inbox/${CUR}/send`,{method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({proposal_ids:ready.map(p=>p.id)})});
   const j=await r.json();
-  btn.disabled=false; btn.textContent='📤 Отправить принятые в Trello';
+  btn.disabled=false;
   if(!r.ok||!j.ok){toast(j.error||'Ошибка отправки');return}
   const n=(j.sent||[]).length, k=(j.skipped||[]).length;
-  toast(k?`${n} ушло в Trello · ${k} пропущено`:`${n} карточек создано · первый срок записан в журнал`);
+  window._attention=new Set((j.skipped||[]).map(x=>x.id));
+  toast(k?`${n} ушло в Trello · ${k} пропущено — подсветил красным`
+        :`${n} карточек создано · первый срок записан в журнал`);
   openMeeting(CUR);
 }
 
@@ -262,30 +285,53 @@ function ownerSelect(p){
   opts.push('<option value="__new">+ Новый участник…</option>');
   return `<select class="inp" onchange="setOwner(${p.id},this.value)">${opts.join('')}</select>`;
 }
+function isReady(p){
+  return p.kind==='task'&&p.status!=='sent'&&p.status!=='rejected'
+    &&(p.criterion||'').trim()&&p.due;
+}
+/* «🗣 сегодня» из речи → клик проставляет дату от даты планёрки */
+function hintToDate(hint){
+  const h=(hint||'').toLowerCase();
+  const opts=dueOptions(DATA.meeting.date);
+  if(/сегодн|завтра|днях|день|дня/.test(h))return opts[0].k;
+  if(/недел|пятниц|понедельник/.test(h))return opts[1].k;
+  if(/месяц/.test(h))return opts[2].k;
+  return null;
+}
+function applyHint(pid,hint){
+  const d=hintToDate(hint);
+  if(d)setDue(pid,d);else toast('Не понял срок из речи — поставьте кнопкой');
+}
 function taskRow(p){
   const dueBtns = dueOptions(DATA.meeting.date).map(d=>
     `<button class="stb" aria-pressed="${p.due===d.k}" onclick="setDue(${p.id},'${d.k}')"
       title="${d.k}${isPast(d.k)?' — уже прошло (считается от даты планёрки)':''}">${d.t}${isPast(d.k)?' ⚠':''}</button>`).join('');
   const hint = (p.source_deadline||'').trim();
-  return `<div class="prop ${p.status==='rejected'?'off':''} ${p.status==='sent'?'sent':''}">
-    <input class="inp full" value="${esc(p.text)}" ${p.status==='sent'?'disabled':''}
-      oninput="textInput(${p.id},this.value)">
-    <div class="row" style="margin-top:8px">
+  const ready = isReady(p);
+  const state = p.status==='rejected'?'off':(p.status==='sent'?'sent':(ready?'ready':'needs'));
+  const attn = window._attention&&window._attention.has(p.id)?' attention':'';
+  return `<div class="prop ${state}${attn}" id="prop-${p.id}">
+    <div class="row" style="justify-content:space-between;align-items:flex-start">
+      <input class="tinput" style="flex:1" value="${esc(p.text)}" ${p.status==='sent'?'disabled':''}
+        oninput="textInput(${p.id},this.value)">
+      ${ready?'<span class="chip g ready-chip">✓ готова</span>':''}
+    </div>
+    <div class="row" style="margin-top:6px">
       ${p.status==='sent'?`<span class="chip g">✓ в Trello</span>`:ownerSelect(p)}
       ${p.t_sec!=null?`<button class="chip a" onclick="playAt(${p.t_sec})">🎧 ${mmss(p.t_sec)}</button>`
         :(p.quote_verified?'':'<span class="chip r" title="Цитата не найдена в расшифровке">цитата не подтверждена</span>')}
-      ${p.confidence?`<span class="chip ${p.confidence==='high'?'g':''}">уверенность: ${esc(p.confidence)}</span>`:''}
-      ${hint?`<span class="chip v" title="Срок, прозвучавший в речи">🗣 ${esc(hint)}</span>`:''}
+      ${hint&&!p.due?`<button class="chip v" title="Срок из речи — нажмите, чтобы поставить"
+        onclick="applyHint(${p.id},'${esc(hint)}')">🗣 ${esc(hint)} → поставить</button>`:''}
       ${p.owner_note?`<span class="chip r" title="${esc(p.owner_note)}">owner не распознан</span>`:''}
     </div>
     ${p.status!=='sent'?`
-    <input class="inp full ${(p.criterion||'').trim()?'':'bad'}" style="margin-top:8px"
-      placeholder="Критерий готовности — обязателен, без него карточка не создастся"
+    <input class="inp full" style="margin-top:8px${(p.criterion||'').trim()?'':';border-color:rgba(180,83,9,.4)'}"
+      placeholder="Критерий готовности — без него карточка не создастся"
       value="${esc(p.criterion||'')}" oninput="critInput(${p.id},this.value)">
     <div class="row" style="margin-top:9px">
       <span class="duelbl">Срок</span>${dueBtns}
       <input type="date" class="inp" value="${p.due||''}" onchange="setDue(${p.id},this.value)">
-      ${p.due?`<span class="chip a">${fd(p.due)}</span>`:'<span class="chip r">не задан</span>'}
+      ${p.due?`<span class="chip a">${fd(p.due)}</span>`:'<span class="chip" style="color:var(--amber);border-color:rgba(180,83,9,.35)">нет срока</span>'}
       <span style="flex:1"></span>
       <button class="stb warn" aria-pressed="${p.status==='rejected'}"
         onclick="reject(${p.id},${p.status==='rejected'})">${p.status==='rejected'?'вернуть':'отклонить'}</button>
@@ -342,15 +388,23 @@ function render(){
       </div></div>`;
   }
 
+  const readyCount=pending.filter(isReady).length;
+  if(pending.length){
+    html+=`<div class="sticky-send">
+      <b style="font-size:14px">Готово: ${readyCount} из ${pending.length}</b>
+      <div class="bar"><i style="width:${Math.round(readyCount/pending.length*100)}%"></i></div>
+      <button class="btn p" id="send-btn" onclick="sendAll()"
+        ${DATA.trello_ready&&readyCount?'':'disabled'}
+        title="${DATA.trello_ready?'Уйдут задачи с зелёной кромкой':'Trello не настроен в .env'}">
+        📤 Отправить${readyCount?' '+readyCount:''} в Trello</button>
+    </div>`;
+  }
   html+=`<div class="card"><h2>Задачи на приёмку <span class="n">${pending.length}</span></h2>
     ${pending.length?pending.map(taskRow).join('')
       :'<div class="empty">✅<b>Всё разобрано</b>Новых задач нет</div>'}
-    ${pending.length?`<div class="row" style="margin-top:12px">
-      <button class="btn p" id="send-btn" onclick="sendAll()" ${DATA.trello_ready?'':'disabled title="Trello не настроен в .env"'}>📤 Отправить принятые в Trello</button>
-      <span class="muted" style="font-size:12.5px">${DATA.trello_ready
-        ?'Уйдут задачи со сроком и критерием. Без них — останутся тут.'
-        :'⚠ Trello не настроен: TRELLO_KEY / TRELLO_TOKEN / TRELLO_LIST_ID в .env'}</span>
-    </div>`:''}
+    ${pending.length?`<p class="muted" style="font-size:12.5px;margin-top:6px">
+      Зелёная кромка — задача готова (есть срок и критерий), янтарная — чего-то не хватает.
+      ${DATA.trello_ready?'':'⚠ Trello не настроен: TRELLO_KEY / TRELLO_TOKEN / TRELLO_LIST_ID в .env'}</p>`:''}
   </div>`;
 
   if(minors.length){
@@ -368,6 +422,10 @@ function render(){
   }
 
   $('app').innerHTML=html;
+  if(window._attention&&window._attention.size){
+    const first=document.getElementById('prop-'+[...window._attention][0]);
+    if(first)first.scrollIntoView({behavior:'smooth',block:'center'});
+  }
 }
 loadList();
 </script>
