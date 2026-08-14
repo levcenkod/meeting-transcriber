@@ -11,8 +11,11 @@ services:
     # Override ENTRYPOINT — запускаем Flask вместо entrypoint.sh
     entrypoint: ["python", "/app/app.py"]
     ports:
-      # Хост-порт можно сменить в .env: APP_PORT=8081 (если 8080 занят)
-      - "${APP_PORT:-8080}:8080"
+      # ТОЛЬКО loopback: Docker публикует порты В ОБХОД ufw (свои iptables-
+      # правила), поэтому "8080:8080" открывает приложение всему интернету
+      # даже при включённом файрволе. Наружу отдаём через tailscale serve.
+      # Хост-порт можно сменить в .env: APP_PORT=8081 (если 8080 занят).
+      - "127.0.0.1:${APP_PORT:-8080}:8080"
     volumes:
       - ./input:/input
       - ./output:/output
