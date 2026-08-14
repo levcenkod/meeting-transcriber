@@ -65,7 +65,7 @@ FAILED_DIR    = Path("/failed")       # source moved here on failure
 # `base_url` can be None for "custom" — the user enters their own URL.
 LLM_PROFILES: dict[str, dict] = {
     "openai":   {"label": "OpenAI (online)",       "base_url": "https://api.openai.com/v1",   "default_model": "gpt-4o-mini",   "needs_key": True},
-    "deepseek": {"label": "DeepSeek (online)",      "base_url": "https://api.deepseek.com/v1", "default_model": "deepseek-chat", "needs_key": True},
+    "deepseek": {"label": "DeepSeek (online)",      "base_url": "https://api.deepseek.com/v1", "default_model": "deepseek-v4-flash", "needs_key": True},
     "lmstudio": {"label": "LM Studio (локально)", "base_url": "http://localhost:1234/v1",    "default_model": "qwen3-32b",     "needs_key": False},
     "ollama":   {"label": "Ollama (локально)",    "base_url": "http://localhost:11434/v1",   "default_model": "qwen3:8b",      "needs_key": False},
     "custom":   {"label": "Свой endpoint",         "base_url": None,                            "default_model": "",              "needs_key": True},
