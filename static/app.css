@@ -71,6 +71,22 @@ body.with-shell>.wrap{margin-left:var(--sh-sidew)}
   padding:7px 6px;border-radius:9px}
 .shell-foot a:hover{background:rgba(255,255,255,.07);color:#fff}
 
+/* ── общий рендер markdown (см. static/md.js) ── */
+.md{font-size:14px;line-height:1.65;color:var(--ink2, #243040)}
+.md h1,.md h2,.md h3{margin:14px 0 7px;font-size:15.5px;letter-spacing:-.01em;
+  color:var(--ink, #0d1117)}
+.md h1{font-size:17px}
+.md h2:first-child,.md h1:first-child{margin-top:2px}
+.md ul{margin:6px 0 10px 20px}
+.md li{margin-bottom:3px}
+.md p{margin-bottom:8px}
+.md blockquote{border-left:3px solid var(--line, rgba(16,40,60,.13));
+  padding:4px 12px;color:var(--muted, #5b6b7c);margin:8px 0}
+.md code{background:rgba(16,40,60,.06);border-radius:5px;padding:1px 5px;font-size:12.5px}
+.md table{border-collapse:collapse;margin:8px 0;font-size:13px;max-width:100%}
+.md td,.md th{border:1px solid var(--hair, rgba(16,40,60,.07));padding:5px 9px}
+.md.scrollable{max-height:58vh;overflow:auto;padding-right:6px}
+
 /* фиксированные элементы страниц не должны заезжать под сайдбар */
 body.with-shell #player-bar{left:var(--sh-sidew)}
 @media(max-width:720px){body.with-shell #player-bar{left:0}}

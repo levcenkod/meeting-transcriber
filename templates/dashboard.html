@@ -96,6 +96,7 @@ table.cmp th{font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color
 .wrap-x{overflow-x:auto}
 </style>
 <link rel="stylesheet" href="/static/app.css">
+<script src="/static/md.js"></script>
 </head>
 <body class="with-shell">
 {% include "_nav.html" %}
@@ -165,8 +166,11 @@ async function loadBrief(){
     <div class="card"><h2>О чём была прошлая встреча
         <span class="n">${fd(m.date)} · ${daysAgo(m.date)}</span></h2>
       <b style="font-size:15px">${esc(m.title)}</b>
-      <div class="sum" style="margin-top:8px">${esc(ex.summary||'Summary не найден')}</div>
-      <div style="margin-top:10px"><button class="btn" onclick="copyBrief()">📋 Скопировать брифинг</button></div>
+      <div class="md scrollable" style="margin-top:8px">${ex.summary?mdRender(ex.summary):'<div class="empty">Summary не найден</div>'}</div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" onclick="copyBrief()">📋 Скопировать брифинг</button>
+        <button class="btn" onclick="location.href='/#m='+${m.id}">Открыть встречу →</button>
+      </div>
     </div>
     ${ex.decisions&&ex.decisions.length?`<div class="card"><h2>Что решили <span class="n">${ex.decisions.length}</span></h2>
       ${ex.decisions.map(d=>`<div class="li">${esc(d)}</div>`).join('')}</div>`:''}
@@ -197,13 +201,12 @@ function copyBrief(){
   const m=BRIEF.last, ex=BRIEF.extras||{};
   const txt=[`БРИФИНГ · ${BRIEF.category}`,
     `Прошлая встреча ${fd(m.date)}: ${m.title}`,'',
-    (ex.summary||'').slice(0,600),'',
+    mdStrip(ex.summary||'',true).slice(0,1200),'',
     'Решения:',...(ex.decisions||[]).map(d=>'• '+d),'',
     'Не решено:',...(ex.open_questions||[]).map(q=>'• '+q),'',
     'Не ушло в Trello:',...(BRIEF.open_tasks||[]).slice(0,8).map(t=>`• ${t.text} (${t.owner||'не назначен'})`)
   ].join('\n');
-  navigator.clipboard.writeText(txt).then(()=>toast('Брифинг скопирован — можно кинуть в чат'))
-    .catch(()=>toast('Не удалось скопировать'));
+  copyToClipboard(txt).then(ok=>toast(ok?'Брифинг скопирован — можно кинуть в чат':'Не удалось скопировать'));
 }
 
 /* ═══ РАСПИСАНИЕ ═══ */
@@ -335,8 +338,7 @@ function copyPulse(){
     'Берут задачи: '+(P.by_owner||[]).map(([w,n])=>`${w} ${n}`).join(' · '),
     ...(P.silent||[]).map(x=>`🔇 ${x.series}: не собирались ${x.days_since} дн.`),
   ].join('\n');
-  navigator.clipboard.writeText(txt).then(()=>toast('Пульс скопирован'))
-    .catch(()=>toast('Не удалось скопировать'));
+  copyToClipboard(txt).then(ok=>toast(ok?'Пульс скопирован':'Не удалось скопировать'));
 }
 
 renderTabs();

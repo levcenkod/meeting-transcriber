@@ -78,16 +78,6 @@ body:before{content:"";position:fixed;inset:0;z-index:-1;background:
   border-left:2px solid var(--line);padding-left:9px}
 .empty{text-align:center;padding:26px 16px;color:var(--faint)}
 .empty b{display:block;color:var(--ink2);font-size:15px;margin:6px 0 3px}
-.md{font-size:14px;line-height:1.65;color:var(--ink2)}
-.md h1,.md h2,.md h3{margin:14px 0 7px;font-size:15.5px;letter-spacing:-.01em;color:var(--ink)}
-.md h1{font-size:17px}
-.md ul{margin:6px 0 10px 20px}
-.md li{margin-bottom:3px}
-.md p{margin-bottom:8px}
-.md blockquote{border-left:3px solid var(--line);padding:4px 12px;color:var(--muted);margin:8px 0}
-.md code{background:rgba(16,40,60,.06);border-radius:5px;padding:1px 5px;font-size:12.5px}
-.md table{border-collapse:collapse;margin:8px 0;font-size:13px}
-.md td,.md th{border:1px solid var(--hair);padding:5px 9px}
 .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(20px);
   background:rgba(13,17,23,.93);color:#fff;padding:11px 18px;border-radius:13px;
   font-size:13.5px;opacity:0;transition:.25s;z-index:99;pointer-events:none}
@@ -104,6 +94,7 @@ details.files .li:before{display:none}
 details.files .li{padding-left:0}
 </style>
 <link rel="stylesheet" href="/static/app.css">
+<script src="/static/md.js"></script>
 </head>
 <body class="with-shell">
 {% include "_nav.html" %}
@@ -126,30 +117,7 @@ const fd=s=>{if(!s)return '—';const d=new Date(s+'T00:00:00');
   return d.toLocaleDateString('ru-RU',{day:'numeric',month:'short'})};
 const mmss=t=>t==null?'':Math.floor(t/60)+':'+String(t%60).padStart(2,'0');
 
-/* Мини-markdown без внешних библиотек (докер живёт офлайн) */
-function md(src){
-  const lines=String(src||'').split(/\r?\n/);let out='',inUl=false,inBq=false;
-  const inline=s=>esc(s)
-    .replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>')
-    .replace(/`([^`]+)`/g,'<code>$1</code>')
-    .replace(/\[\[([^\]]+)\]\]/g,'<span style="color:var(--accent)">$1</span>');
-  const closeAll=()=>{if(inUl){out+='</ul>';inUl=false}if(inBq){out+='</blockquote>';inBq=false}};
-  for(const raw of lines){
-    const l=raw.trimEnd();
-    const h=l.match(/^(#{1,4})\s+(.*)/);
-    if(h){closeAll();const n=Math.min(h[1].length,3);out+=`<h${n}>${inline(h[2])}</h${n}>`;continue}
-    if(/^\s*[-*]\s+/.test(l)){if(!inUl){closeAll();out+='<ul>';inUl=true}
-      out+='<li>'+inline(l.replace(/^\s*[-*]\s+/,''))+'</li>';continue}
-    if(/^>\s?/.test(l)){if(!inBq){closeAll();out+='<blockquote>';inBq=true}
-      out+=inline(l.replace(/^>\s?/,''))+'<br>';continue}
-    if(/^\s*\|.*\|\s*$/.test(l)){closeAll();
-      if(/^\s*\|[\s:|-]+\|\s*$/.test(l))continue;
-      out+='<table><tr>'+l.split('|').slice(1,-1).map(c=>'<td>'+inline(c.trim())+'</td>').join('')+'</tr></table>';continue}
-    if(l==='---'||l===''){closeAll();continue}
-    closeAll();out+='<p>'+inline(l)+'</p>';
-  }
-  closeAll();return out.replace(/<\/table><table>/g,'');
-}
+/* Рендер markdown и копирование — в общем /static/md.js */
 
 let LIST=[], SERIES=[], CUR=null, q='';
 
@@ -239,7 +207,7 @@ async function openMeeting(id){
     <div class="card"><h2>Коротко</h2>
       ${audio?`<div class="row" style="margin-bottom:10px">
         <button class="chip a" onclick="playAt(0)">🎧 Слушать запись</button></div>`:''}
-      <div class="md">${fileData.summary_md?md(stripFm(fileData.summary_md)):'<div class="empty">Summary не найден</div>'}</div>
+      <div class="md">${fileData.summary_md?mdRender(fileData.summary_md):'<div class="empty">Summary не найден</div>'}</div>
       <div class="row" style="margin-top:11px">
         <button class="btn" onclick="copySum()">📋 Скопировать</button>
         ${pending?`<a class="btn p" style="text-decoration:none" href="/inbox?m=${id}">→ В приёмку (${pending})</a>`:''}
@@ -279,15 +247,11 @@ async function openMeeting(id){
            <span class="tc"> · ${(f.size/1024).toFixed(0)} КБ</span></div>`).join('')}</div>
       </details></div>`:''}
   </div></div>`;
-  window._summaryText=fileData.summary_md?stripFm(fileData.summary_md):'';
-}
-function stripFm(s){
-  if(s.startsWith('---')){const e=s.indexOf('\n---',3);if(e!==-1)return s.slice(e+4).replace(/^\s+/,'')}
-  return s;
+  window._summaryText=fileData.summary_md?mdStrip(fileData.summary_md,false):'';
 }
 function copySum(){
-  navigator.clipboard.writeText(window._summaryText||'')
-    .then(()=>toast('Summary скопирован')).catch(()=>toast('Не удалось скопировать'));
+  copyToClipboard(window._summaryText||'')
+    .then(ok=>toast(ok?'Summary скопирован':'Не удалось скопировать'));
 }
 async function promote(pid,meetingId){
   const r=await fetch('/api/proposal/'+pid,{method:'POST',

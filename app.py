@@ -1578,8 +1578,10 @@ def _brief_extras(m: dict) -> dict:
     sp = out_dir / f"{stem}_summary.md"
     if sp.exists():
         try:
+            # Полный текст (с разумным потолком): брифинг рендерит markdown
+            # целиком, обрезка в 900 символов делала его нечитаемым.
             res["summary"] = _strip_frontmatter(
-                sp.read_text(encoding="utf-8"))[:900]
+                sp.read_text(encoding="utf-8"))[:6000]
         except Exception:
             pass
 
