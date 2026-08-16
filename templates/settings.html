@@ -302,6 +302,22 @@
     </div>
   </div>
 
+  <div class="card">
+    <h2>Доступ по IP</h2>
+    <div class="small" style="margin-bottom:10px">
+      Второй замок поверх пароля: когда список не пуст, сайт открывается только
+      с этих адресов. Пустой список — фильтр выключен. Tailscale-доступ работает
+      всегда (это запасная дверь, чтобы не запереть самих себя).
+    </div>
+    <div class="small" id="ipwl-your" style="margin-bottom:10px">Ваш текущий IP: …</div>
+    <div id="ipwl-list" style="margin-bottom:10px"></div>
+    <div style="display:flex; gap:8px;">
+      <input type="text" id="ipwl-input" placeholder="напр. 5.231.123.114" style="flex:1;">
+      <button type="button" id="ipwl-add">+ Добавить</button>
+    </div>
+    <div class="small" id="ipwl-status" style="margin-top:8px;"></div>
+  </div>
+
   <div class="save-bar">
     <span class="save-status" id="save-status"></span>
     <button id="save-btn" class="primary">Сохранить</button>
@@ -310,6 +326,47 @@
 </div>
 
 <script>
+/* ── Доступ по IP (самодостаточный блок) ── */
+(function(){
+  const list=document.getElementById('ipwl-list');
+  const input=document.getElementById('ipwl-input');
+  const your=document.getElementById('ipwl-your');
+  const status=document.getElementById('ipwl-status');
+  const escIp=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  let yourIp='';
+  function draw(d){
+    yourIp=d.your_ip||'';
+    your.innerHTML='Ваш текущий IP: <b>'+escIp(yourIp||'не определён')+'</b>'
+      +(yourIp&&d.active&&!(d.ips||[]).includes(yourIp)
+        ?' <span style="color:#b45309">— внимание: его нет в списке, с этого адреса вход только через Tailscale</span>':'');
+    const ips=d.ips||[];
+    list.innerHTML=ips.length?ips.map(ip=>
+      '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid rgba(128,128,128,.15)">'
+      +'<code style="flex:1">'+escIp(ip)+'</code>'
+      +(ip===yourIp?'<span class="small">это вы</span>':'')
+      +'<button type="button" data-ip="'+escIp(ip)+'" class="ipwl-del">✕</button></div>').join('')
+      :'<div class="small">Список пуст — фильтр выключен, пускаются все (с паролем).</div>';
+    status.textContent=d.active?'Фильтр активен: '+ips.length+' адрес(а).':'';
+    list.querySelectorAll('.ipwl-del').forEach(b=>b.addEventListener('click',()=>send('DELETE',b.dataset.ip)));
+  }
+  async function send(method,ip){
+    if(method==='DELETE'&&ip===yourIp
+       &&!confirm('Это ваш текущий адрес — удалив его, вы сможете зайти только через Tailscale. Удалить?'))return;
+    const r=await fetch('/api/ip-whitelist',{method,headers:{'Content-Type':'application/json'},body:JSON.stringify({ip})});
+    const d=await r.json();
+    if(!r.ok||!d.ok){status.textContent=d.error||'Ошибка';return}
+    load();
+  }
+  async function load(){
+    try{const r=await fetch('/api/ip-whitelist');draw(await r.json())}catch(e){}
+  }
+  document.getElementById('ipwl-add').addEventListener('click',()=>{
+    const ip=input.value.trim(); if(!ip)return;
+    send('POST',ip); input.value='';
+  });
+  load();
+})();
+
 const modelSelect      = document.getElementById('model-select');
 const modelManual      = document.getElementById('model-manual');
 const modelCurrent     = document.getElementById('model-current');

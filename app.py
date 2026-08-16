@@ -86,6 +86,7 @@ _SETTINGS_KEYS = (
     "LLM_MODEL",              # legacy single-model setting (kept for compat)
     "SUMMARY_MODE",           # full | compact | minimal
     "OBSIDIAN_SUBFOLDER",
+    "IP_WHITELIST",           # список разрешённых внешних IP; пусто = фильтр выкл
 )
 
 # Settings keys whose value is a {profile_id: str} dict.
@@ -106,6 +107,10 @@ def _load_settings() -> dict:
                     if isinstance(v, dict):
                         out[k] = {pk: str(pv) for pk, pv in v.items()
                                   if isinstance(pk, str) and pv}
+                elif k == "IP_WHITELIST":
+                    if isinstance(v, list):
+                        out[k] = [str(x).strip() for x in v
+                                  if isinstance(x, str) and x.strip()]
                 elif v not in (None, ""):
                     out[k] = v
             return out
@@ -127,6 +132,15 @@ def _save_settings(data: dict) -> dict:
                     if isinstance(pk, str) and isinstance(pv, str) and pv.strip():
                         existing[pk] = pv.strip()
                 current[k] = existing
+            continue
+        if k == "IP_WHITELIST":
+            if isinstance(v, list):
+                clean = [str(x).strip() for x in v
+                         if isinstance(x, str) and x.strip()]
+                if clean:
+                    current[k] = clean
+                else:
+                    current.pop(k, None)   # пустой список = фильтр выключен
             continue
         if isinstance(v, str):
             v = v.strip()
@@ -744,6 +758,68 @@ def _pipeline(job_id: str, source_path: Path, source_kind: str, stem: str,
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
+
+# ── Доступ по IP: второй слой поверх basic auth (Caddy) ──────────────────────
+# Пустой список = фильтр выключен. Всегда пропускаются: tailnet (100.64/10 —
+# запасная дверь, чтобы не запереть самих себя), loopback и внутренние вызовы
+# без X-Forwarded-For (health-чеки с хоста). Внешние запросы приходят только
+# через Caddy/tailscale serve — оба честно ставят XFF.
+
+import ipaddress
+
+_TAILNET_NET = ipaddress.ip_network("100.64.0.0/10")
+
+
+def _client_ip() -> str:
+    xff = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    return xff or (request.remote_addr or "")
+
+
+@app.before_request
+def _ip_gate():
+    wl = _load_settings().get("IP_WHITELIST") or []
+    if not wl:
+        return None
+    if not request.headers.get("X-Forwarded-For"):
+        return None                      # внутренняя обвязка (хост/контейнер)
+    ip = _client_ip()
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return Response("Forbidden", status=403)
+    if addr.is_loopback or (addr.version == 4 and addr in _TAILNET_NET):
+        return None
+    if ip in wl:
+        return None
+    return Response(
+        f"<div style='font-family:sans-serif;max-width:480px;margin:80px auto;"
+        f"text-align:center'><h2>Доступ ограничен</h2>"
+        f"<p>Ваш IP: <b style='font-size:18px'>{ip}</b><br>"
+        f"его нет в списке разрешённых.</p>"
+        f"<p style='color:#777'>Попросите администратора добавить этот адрес: "
+        f"Настройки → Доступ по IP.</p></div>",
+        status=403, mimetype="text/html")
+
+
+@app.route("/api/ip-whitelist", methods=["GET", "POST", "DELETE"])
+def api_ip_whitelist():
+    if request.method == "GET":
+        wl = _load_settings().get("IP_WHITELIST") or []
+        return jsonify({"ips": wl, "your_ip": _client_ip(), "active": bool(wl)})
+    data = request.get_json(silent=True) or {}
+    ip = (data.get("ip") or "").strip()
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        return jsonify({"ok": False, "error": "это не похоже на IP-адрес"}), 400
+    wl = list(_load_settings().get("IP_WHITELIST") or [])
+    if request.method == "POST" and ip not in wl:
+        wl.append(ip)
+    if request.method == "DELETE" and ip in wl:
+        wl.remove(ip)
+    _save_settings({"IP_WHITELIST": wl})
+    return jsonify({"ok": True, "ips": wl, "active": bool(wl)})
+
 
 @app.route("/")
 def index():
