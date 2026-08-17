@@ -139,6 +139,13 @@ def _handle_message(msg: dict) -> None:
     from_id = (msg.get("from") or {}).get("id")
     mid = msg.get("message_id")
     allowed = _allowed_ids()
+    # Лог каждого входящего: иначе «кинул и тишина» не отладить.
+    kinds = [k for k in ("voice", "audio", "video", "video_note", "document",
+                         "text", "photo", "sticker") if k in msg]
+    print(f"[TG] update: from={from_id} chat={chat_id} "
+          f"type={','.join(kinds) or '?'} "
+          f"allowed={'yes' if {str(from_id), str(chat_id)} & allowed else 'NO'}",
+          flush=True)
 
     if not ({str(from_id), str(chat_id)} & allowed):
         _reply(chat_id,
