@@ -2057,6 +2057,55 @@ def _db_register_meeting(out_dir: Path, stem: str) -> None:
         print(f"[DB] upsert встречи {stem}: {exc}", flush=True)
 
 
+def _requeue_orphans() -> None:
+    """Перезапуск обработок, убитых рестартом контейнера (деплой, ребут).
+
+    Пайплайн первым делом сохраняет копию аудио ({stem}_audio.*), а мету
+    пишет в самом конце. Аудио без меты = обработка оборвалась на середине —
+    догоняем из сохранённой копии, последовательно, уступая живым задачам.
+    """
+    orphans = []
+    if OUTPUT_DIR.exists():
+        for audio in OUTPUT_DIR.rglob("*_audio.*"):
+            rel_parts = audio.relative_to(OUTPUT_DIR).parts
+            if rel_parts and rel_parts[0] in ("_obsidian", "backups"):
+                continue
+            stem = audio.name[: audio.name.rfind("_audio.")]
+            if not stem or (audio.parent / f"{stem}_meta.json").exists():
+                continue
+            dparts = audio.parent.relative_to(OUTPUT_DIR).parts
+            category = dparts[0] if dparts else "Общее"
+            subcategory = dparts[1] if len(dparts) > 1 else "Без подкатегории"
+            orphans.append((audio, category, subcategory, stem))
+    if not orphans:
+        print("[RECOVER] Оборванных обработок нет", flush=True)
+        return
+    print(f"[RECOVER] Оборванных обработок: {len(orphans)} — перезапускаю", flush=True)
+
+    def _worker():
+        for audio, category, subcategory, stem in orphans:
+            while any(j.get("status") == "running" for j in _jobs.values()):
+                time.sleep(5)
+            meeting_date, date_source = (None, "none")
+            if resolve_meeting_date is not None:
+                try:
+                    mtime = audio.stat().st_mtime
+                except OSError:
+                    mtime = None
+                meeting_date, date_source = resolve_meeting_date(
+                    filename=stem, mtime=mtime)
+            job_id = _create_job(audio.name, category, subcategory)
+            print(f"[RECOVER] ▶ {stem}", flush=True)
+            try:
+                _pipeline(job_id, audio, "audio", stem, category, subcategory,
+                          os.environ.get("LANGUAGE", "ru"), True,
+                          meeting_date, date_source)
+            except Exception as exc:
+                print(f"[RECOVER] ✗ {stem}: {exc}", flush=True)
+
+    threading.Thread(target=_worker, daemon=True, name="orphan-recover").start()
+
+
 def _init_state_db() -> None:
     """Схема + импорт истории из output/ + бэкап при старте и раз в сутки."""
     if state_db is None:
@@ -2090,4 +2139,5 @@ if __name__ == "__main__":
     INPUT_DIR.mkdir(exist_ok=True)
     _init_state_db()
     _start_watcher()
+    _requeue_orphans()
     app.run(host="0.0.0.0", port=8080, threaded=True)
