@@ -2089,6 +2089,16 @@ def _requeue_orphans() -> None:
             dparts = audio.parent.relative_to(OUTPUT_DIR).parts
             category = dparts[0] if dparts else "Общее"
             subcategory = dparts[1] if len(dparts) > 1 else "Без подкатегории"
+            # Если исходник этой же встречи ждёт в воронке — не дублируем:
+            # воронка обработает сама, а два прогона одного файла — час CPU в мусор.
+            try:
+                in_inbox = any(p.is_file() and p.stem == stem
+                               for p in INBOX_DIR.rglob("*"))
+            except OSError:
+                in_inbox = False
+            if in_inbox:
+                print(f"[RECOVER] {stem}: файл ждёт в воронке — пропускаю", flush=True)
+                continue
             orphans.append((audio, category, subcategory, stem))
     if not orphans:
         print("[RECOVER] Оборванных обработок нет", flush=True)
