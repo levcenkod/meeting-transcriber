@@ -728,6 +728,10 @@ def _pipeline(job_id: str, source_path: Path, source_kind: str, stem: str,
         # ── Регистрация встречи в БД состояния (идемпотентно) ────────────────
         _db_register_meeting(out_dir, stem)
 
+        # ── «Обработано» в Telegram — из пайплайна, а не из путей вокруг ─────
+        if llm_enabled:
+            _notify_processed(out_dir, stem, category, subcategory)
+
         job["result"] = {
             "primary": primary, "secondary": secondary,
             "summary_md": summary_md,
@@ -1936,32 +1940,6 @@ def _ingest_inbox_file(path: Path) -> None:
     success = _jobs.get(job_id, {}).get("status") == "done"
     _move_processed(path, success)
 
-    # Замыкаем телеграм-воронку: «кинул войс → получил „обработано, N задач“».
-    if success and telegram_notify is not None and telegram_notify.configured():
-        try:
-            cat_slug = _slugify_filename(category, 40) or "Общее"
-            sub_slug = _slugify_filename(subcategory, 40) or "Без подкатегории"
-            meta = _read_meta(OUTPUT_DIR / cat_slug / sub_slug / f"{stem}_meta.json") or {}
-            mid, n_tasks = None, 0
-            if state_db is not None:
-                with state_db.get_db() as con:
-                    row = con.execute(
-                        "SELECT id FROM meeting WHERE dir = ? AND stem = ?",
-                        (f"{cat_slug}/{sub_slug}", stem)).fetchone()
-                    if row:
-                        mid = row["id"]
-                        n_tasks = con.execute(
-                            "SELECT COUNT(*) c FROM proposal WHERE meeting_id = ? "
-                            "AND kind = 'task' AND status = 'proposed'",
-                            (mid,)).fetchone()["c"]
-            base = (os.environ.get("APP_PUBLIC_URL") or "").rstrip("/")
-            link = f"\n{base}/inbox?m={mid}" if base and mid else ""
-            telegram_notify.send(
-                f"✅ Обработано: {meta.get('title') or stem}\n"
-                f"Задач на приёмку: {n_tasks}{link}")
-        except Exception as exc:
-            print(f"[WATCH] Уведомление об обработке: {exc}", flush=True)
-
 
 def _watch_scanner() -> None:
     """Periodically scan /inbox and enqueue new, fully-written files."""
@@ -2023,6 +2001,41 @@ def _start_watcher() -> None:
     threading.Thread(target=_watch_worker, daemon=True, name="watch-worker").start()
     print(f"[WATCH] Воронка активна: бросайте файлы в /inbox "
           f"(интервал {int(_watch_interval())} c).", flush=True)
+
+
+def _notify_processed(out_dir: Path, stem: str, category: str,
+                      subcategory: str) -> None:
+    """«✅ Обработано: …, задач N» в Telegram — для ЛЮБОГО пути обработки.
+
+    Раньше хук жил только в воронке, и записи, дошедшие до финиша через
+    UI-загрузку или восстановление после рестарта, завершались молча.
+    """
+    if telegram_notify is None or not telegram_notify.configured():
+        return
+    try:
+        meta = _read_meta(out_dir / f"{stem}_meta.json") or {}
+        mid, n_tasks = None, 0
+        if state_db is not None:
+            rel = out_dir.resolve().relative_to(OUTPUT_DIR.resolve()).as_posix()
+            with state_db.get_db() as con:
+                row = con.execute(
+                    "SELECT id FROM meeting WHERE dir = ? AND stem = ?",
+                    (rel, stem)).fetchone()
+                if row:
+                    mid = row["id"]
+                    n_tasks = con.execute(
+                        "SELECT COUNT(*) c FROM proposal WHERE meeting_id = ? "
+                        "AND kind = 'task' AND status = 'proposed'",
+                        (mid,)).fetchone()["c"]
+        base = (os.environ.get("APP_PUBLIC_URL") or "").rstrip("/")
+        link = f"\n{base}/inbox?m={mid}" if base and mid else ""
+        ok = telegram_notify.send(
+            f"✅ Обработано: {meta.get('title') or stem}\n"
+            f"Задач на приёмку: {n_tasks}{link}")
+        print(f"[NOTIFY] Обработано «{stem}»: "
+              f"{'отправлено' if ok else 'TELEGRAM НЕ ПРИНЯЛ'}", flush=True)
+    except Exception as exc:
+        print(f"[NOTIFY] Ошибка уведомления «{stem}»: {exc}", flush=True)
 
 
 def _db_register_meeting(out_dir: Path, stem: str) -> None:
