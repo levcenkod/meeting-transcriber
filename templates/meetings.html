@@ -235,9 +235,20 @@ async function openMeeting(id){
     <div class="card"><h2>Коротко</h2>
       ${audio?`<div class="row" style="margin-bottom:10px">
         <button class="chip a" onclick="playAt(0)">🎧 Слушать запись</button></div>`:''}
-      <div class="md">${fileData.summary_md?mdRender(fileData.summary_md):'<div class="empty">Summary не найден</div>'}</div>
-      <div class="row" style="margin-top:11px">
+      <div class="md" id="sum-view">${fileData.summary_md?mdRender(fileData.summary_md):'<div class="empty">Summary не найден</div>'}</div>
+      <div id="sum-edit" style="display:none">
+        <textarea id="sum-ta" style="width:100%;min-height:340px;padding:10px 12px;
+          border:1px solid var(--line);border-radius:12px;font:13px/1.5 ui-monospace,monospace;
+          background:var(--solid);color:var(--ink);resize:vertical"></textarea>
+        <div class="row" style="margin-top:8px">
+          <button class="btn p" onclick="saveSum(${id})">Сохранить</button>
+          <button class="btn" onclick="toggleEdit(false)">Отмена</button>
+          <span class="muted" style="font-size:12px">Markdown; обновится и копия в Obsidian</span>
+        </div>
+      </div>
+      <div class="row" style="margin-top:11px" id="sum-actions">
         <button class="btn" onclick="copySum()">📋 Скопировать</button>
+        ${fileData.summary_md?`<button class="btn" onclick="toggleEdit(true)">✏️ Редактировать</button>`:''}
         ${pending?`<a class="btn p" style="text-decoration:none" href="/inbox?m=${id}">→ В приёмку (${pending})</a>`:''}
       </div></div>
     ${(extras.decisions||[]).length?`<div class="card"><h2>Решения <span class="n">${extras.decisions.length}</span></h2>
@@ -280,6 +291,21 @@ async function openMeeting(id){
 function copySum(){
   copyToClipboard(window._summaryText||'')
     .then(ok=>toast(ok?'Summary скопирован':'Не удалось скопировать'));
+}
+function toggleEdit(on){
+  $('sum-view').style.display=on?'none':'';
+  $('sum-actions').style.display=on?'none':'';
+  $('sum-edit').style.display=on?'':'none';
+  if(on)$('sum-ta').value=window._summaryText||'';
+}
+async function saveSum(id){
+  const text=$('sum-ta').value;
+  const r=await fetch('/api/meeting-summary/'+id,{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
+  const j=await r.json();
+  if(!r.ok||!j.ok){toast(j.error||'Ошибка сохранения');return}
+  toast('Сохранено — и здесь, и в Obsidian-копии');
+  openMeeting(id);
 }
 async function promote(pid,meetingId){
   const r=await fetch('/api/proposal/'+pid,{method:'POST',

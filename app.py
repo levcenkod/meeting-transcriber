@@ -87,6 +87,7 @@ _SETTINGS_KEYS = (
     "SUMMARY_MODE",           # full | compact | minimal
     "OBSIDIAN_SUBFOLDER",
     "IP_WHITELIST",           # список разрешённых внешних IP; пусто = фильтр выкл
+    "SERIES_SCHEDULE",        # {категория: {"days": [0..6], "time": "10:00"}}
 )
 
 # Settings keys whose value is a {profile_id: str} dict.
@@ -111,6 +112,10 @@ def _load_settings() -> dict:
                     if isinstance(v, list):
                         out[k] = [str(x).strip() for x in v
                                   if isinstance(x, str) and x.strip()]
+                elif k == "SERIES_SCHEDULE":
+                    if isinstance(v, dict):
+                        out[k] = {sk: sv for sk, sv in v.items()
+                                  if isinstance(sk, str) and isinstance(sv, dict)}
                 elif v not in (None, ""):
                     out[k] = v
             return out
@@ -141,6 +146,26 @@ def _save_settings(data: dict) -> dict:
                     current[k] = clean
                 else:
                     current.pop(k, None)   # пустой список = фильтр выключен
+            continue
+        if k == "SERIES_SCHEDULE":
+            if isinstance(v, dict):
+                existing = current.get(k, {}) if isinstance(current.get(k), dict) else {}
+                for sk, sv in v.items():
+                    if not isinstance(sk, str):
+                        continue
+                    if isinstance(sv, dict) and (sv.get("days") or sv.get("time")):
+                        days = [int(d) for d in (sv.get("days") or [])
+                                if isinstance(d, (int, float)) and 0 <= int(d) <= 6]
+                        time_s = str(sv.get("time") or "").strip()
+                        if not re.fullmatch(r"\d{1,2}:\d{2}", time_s):
+                            time_s = ""
+                        existing[sk] = {"days": sorted(set(days)), "time": time_s}
+                    else:
+                        existing.pop(sk, None)   # пустая запись = убрать расписание
+                if existing:
+                    current[k] = existing
+                else:
+                    current.pop(k, None)
             continue
         if isinstance(v, str):
             v = v.strip()
@@ -1178,19 +1203,28 @@ def result(job_id: str):
 
 
 def _parse_speakers(speakers_txt: Path) -> list:
-    """Return [{code, samples}] from a *_speakers.txt file."""
+    """Return [{code, samples, t_sec}] from a *_speakers.txt file.
+
+    t_sec — начало первой реплики спикера: по нему приёмка даёт «послушать
+    голос», чтобы имена назначались ушами, а не наугад.
+    """
     text    = speakers_txt.read_text(encoding="utf-8")
-    pattern = re.compile(r'\[\d+:\d+:\d+\s*-\s*\d+:\d+:\d+\]\s*(SPEAKER_\w+):')
+    pattern = re.compile(r'\[(\d+):(\d+):(\d+)\s*-\s*\d+:\d+:\d+\]\s*(SPEAKER_\w+):')
     speakers: dict[str, list] = {}
+    first_t: dict[str, int] = {}
     current  = None
     for line in text.splitlines():
         m = pattern.match(line.strip())
         if m:
-            current = m.group(1)
+            current = m.group(4)
             speakers.setdefault(current, [])
+            if current not in first_t:
+                first_t[current] = (int(m.group(1)) * 3600
+                                    + int(m.group(2)) * 60 + int(m.group(3)))
         elif current and line.strip() and len(speakers[current]) < 3:
             speakers[current].append(line.strip())
-    return [{"code": k, "samples": v} for k, v in sorted(speakers.items())]
+    return [{"code": k, "samples": v, "t_sec": first_t.get(k)}
+            for k, v in sorted(speakers.items())]
 
 
 def _refresh_result(job: dict) -> None:
@@ -1727,12 +1761,57 @@ def api_meeting_extras(meeting_id: int):
     return jsonify({"meeting": m, "extras": _brief_extras(m)})
 
 
+@app.route("/api/meeting-summary/<int:meeting_id>", methods=["POST"])
+def api_edit_summary(meeting_id: int):
+    """Правка саммари человеком: тело меняется, frontmatter сохраняется.
+
+    Obsidian-копия пересобирается, чтобы не разъезжалась с правдой.
+    """
+    m = _meeting_row(meeting_id)
+    if not m:
+        return jsonify({"error": "Встреча не найдена"}), 404
+    body = ((request.get_json(silent=True) or {}).get("text") or "").strip()
+    if not body:
+        return jsonify({"ok": False, "error": "пустой текст"}), 400
+    sp = OUTPUT_DIR / m["dir"] / f"{m['stem']}_summary.md"
+    if not sp.exists():
+        return jsonify({"ok": False, "error": "summary-файл не найден"}), 404
+    old = sp.read_text(encoding="utf-8")
+    fm = ""
+    if old.startswith("---"):
+        end = old.find("\n---", 3)
+        if end != -1:
+            fm = old[: end + 4] + "\n"
+    sp.write_text(fm + body.rstrip() + "\n", encoding="utf-8")
+    try:
+        _create_obsidian_note(OUTPUT_DIR / m["dir"], m["stem"],
+                              m.get("category") or "Общее",
+                              m.get("subcategory") or "Без подкатегории")
+    except Exception as exc:
+        print(f"[SUMMARY] obsidian-копия: {exc}", flush=True)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/series-schedule", methods=["POST"])
+def api_series_schedule():
+    """Регулярность серии: {series, days: [0..6], time: "10:00"}. Пусто = убрать."""
+    data = request.get_json(silent=True) or {}
+    series = (data.get("series") or "").strip()
+    if not series:
+        return jsonify({"ok": False, "error": "нет серии"}), 400
+    _save_settings({"SERIES_SCHEDULE": {
+        series: {"days": data.get("days") or [], "time": data.get("time") or ""}}})
+    return jsonify({"ok": True,
+                    "schedule": _load_settings().get("SERIES_SCHEDULE") or {}})
+
+
 @app.route("/api/schedule")
 def api_schedule():
     if state_db is None:
         return jsonify({"series": []})
     with state_db.get_db() as con:
-        return jsonify({"series": state_db.series_stats(con)})
+        return jsonify({"series": state_db.series_stats(con),
+                        "schedule": _load_settings().get("SERIES_SCHEDULE") or {}})
 
 
 @app.route("/api/brief")
@@ -1758,6 +1837,7 @@ def api_brief():
         "extras": extras,
         "open_tasks": open_tasks,
         "recent": meetings[:6],
+        "schedule": (_load_settings().get("SERIES_SCHEDULE") or {}).get(category),
     })
 
 

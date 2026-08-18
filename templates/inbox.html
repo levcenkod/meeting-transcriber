@@ -237,6 +237,16 @@ function textInput(pid,val){
 
 // ── Имена спикеров (не блокирует приёмку) ───────────────────────────────────
 const spkPending={};
+async function spkChoose(code, sel){
+  if(sel.value!=='__new'){spkPending[code]=sel.value;return}
+  const name=prompt('Имя нового участника:');
+  if(!name||!name.trim()){sel.value='';return}
+  await fetch('/api/people',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:name.trim()})});
+  const r=await fetch('/api/people');DATA.people=(await r.json()).people;
+  spkPending[code]=name.trim();
+  render();   // селекты пересоберутся с новым человеком и запомненными выборами
+}
 async function applySpeakers(){
   const mapping={};
   for(const [k,v] of Object.entries(spkPending)) if(v) mapping[k]=v;
@@ -379,16 +389,21 @@ function render(){
 
   if(unnamed.length){
     html+=`<div class="box d">🎙 <b>Кто говорит?</b> Неизвестных голосов: ${unnamed.length}.
-      Имена подставятся во все файлы и в исполнителей задач. Приёмку это не блокирует.
-      <div class="row" style="margin-top:9px">
-      ${unnamed.map(s=>`<span class="row" style="gap:4px">
-        ${s.samples&&s.samples[0]?`<span class="tc" title="${esc(s.samples[0])}">«${esc(s.samples[0].slice(0,40))}…»</span>`:''}
-        <select class="inp" onchange="spkPending['${esc(s.code)}']=this.value">
-          <option value="">${esc(s.code)} → выберите</option>
-          ${(DATA.people||[]).map(p=>`<option>${esc(p)}</option>`).join('')}
-        </select></span>`).join('')}
-      <button class="btn" style="padding:7px 14px;font-size:12.5px" onclick="applySpeakers()">Применить</button>
-      </div></div>`;
+      Нажмите 🎧 — послушайте голос, выберите человека. Имена подставятся во все
+      файлы и в исполнителей задач. Приёмку это не блокирует.
+      <div style="margin-top:9px">
+      ${unnamed.map((s,i)=>`<div class="row" style="gap:6px;padding:5px 0">
+        ${s.t_sec!=null?`<button class="chip a" onclick="playAt(${s.t_sec})">🎧 ${mmss(s.t_sec)}</button>`:''}
+        <b style="font-size:13px">${esc(s.code)}</b>
+        ${s.samples&&s.samples[0]?`<span class="tc" style="flex:1;min-width:140px" title="${esc(s.samples.join(' … '))}">«${esc(s.samples[0].slice(0,60))}…»</span>`:''}
+        <select class="inp" style="width:auto" id="spk-sel-${i}" onchange="spkChoose('${esc(s.code)}',this)">
+          <option value="">→ выберите</option>
+          ${(DATA.people||[]).map(p=>`<option ${spkPending[s.code]===p?'selected':''}>${esc(p)}</option>`).join('')}
+          <option value="__new">＋ Новый участник…</option>
+        </select></div>`).join('')}
+      <div class="row" style="margin-top:6px">
+        <button class="btn" style="padding:7px 14px;font-size:12.5px" onclick="applySpeakers()">Применить</button>
+      </div></div></div>`;
   }
 
   const readyCount=pending.filter(isReady).length;

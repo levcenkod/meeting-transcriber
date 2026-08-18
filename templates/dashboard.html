@@ -161,9 +161,11 @@ async function loadBrief(){
   }
   briefCat=BRIEF.category;
   const m=BRIEF.last, ex=BRIEF.extras||{};
+  const nxt=nextOccurrence(BRIEF.schedule);
   let html=`<div class="chipbar">${BRIEF.series.map(s=>
     `<button class="chip" aria-pressed="${s.series===briefCat}"
-      onclick="briefCat='${esc(s.series)}';loadBrief()">${esc(s.series)} <b>${s.n}</b></button>`).join('')}</div>`;
+      onclick="briefCat='${esc(s.series)}';loadBrief()">${esc(s.series)} <b>${s.n}</b></button>`).join('')}
+    ${nxt?`<span class="chip g static">📅 следующая планёрка: ${nxt}</span>`:''}</div>`;
   if(!m){html+='<div class="empty">В этой серии пока пусто</div>';$('app').innerHTML=html;return}
   html+=`<div class="cols"><div>
     <div class="card"><h2>О чём была прошлая встреча
@@ -213,12 +215,37 @@ function copyBrief(){
 }
 
 /* ═══ РАСПИСАНИЕ ═══ */
+const DOW=['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
+function schedLabel(sc){
+  if(!sc||(!sc.days?.length&&!sc.time))return '';
+  const days=(sc.days||[]).map(d=>DOW[d]).join(', ');
+  return [days,sc.time].filter(Boolean).join(' · ');
+}
+function nextOccurrence(sc){
+  if(!sc||!sc.days?.length)return null;
+  const now=new Date();
+  for(let add=0;add<8;add++){
+    const d=new Date(now); d.setDate(d.getDate()+add);
+    const dow=(d.getDay()+6)%7;                     // 0=Пн
+    if(!sc.days.includes(dow))continue;
+    if(add===0&&sc.time){
+      const [h,m]=sc.time.split(':').map(Number);
+      if(now.getHours()*60+now.getMinutes()>h*60+m)continue;  // сегодня уже прошла
+    }
+    const name=add===0?'сегодня':(add===1?'завтра':DOW[dow]);
+    return name+(sc.time?' в '+sc.time:'');
+  }
+  return null;
+}
 async function loadSchedule(){
   const r=await fetch('/api/schedule'); const j=await r.json();
-  const series=j.series||[];
+  const series=j.series||[]; const SCHED=j.schedule||{};
   if(!series.length){$('app').innerHTML='<div class="card"><div class="empty">📭<b>Пока пусто</b></div></div>';return}
-  $('app').innerHTML='<p class="muted" style="margin-bottom:12px">Ритм посчитан по реальным записям, не по намерениям.</p>'
-    +series.map(s=>`<div class="card">
+  $('app').innerHTML='<p class="muted" style="margin-bottom:12px">Ритм посчитан по реальным записям; регулярность задаётся здесь и попадает в брифинг.</p>'
+    +series.map((s,idx)=>{
+      const sc=SCHED[s.series]||{days:[],time:''};
+      const nxt=nextOccurrence(sc);
+      return `<div class="card">
     <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">
       <div><b style="font-size:15px">${esc(s.series)}</b>
         <div class="muted" style="font-size:12.5px">${s.n} планёрок · ${s.per_week} в неделю ·
@@ -228,10 +255,37 @@ async function loadSchedule(){
     <div class="chipbar" style="margin:10px 0 0">
       ${s.days_since>14?`<span class="chip r static">🔇 не собирались ${s.days_since} дн.</span>`
         :`<span class="chip g static">ритм в норме</span>`}
+      ${nxt?`<span class="chip g static">📅 следующая: ${nxt}</span>`:''}
       <span class="chip static">задач ${s.n_actions}</span>
       <span class="chip static">решений ${s.n_decisions}</span>
-    </div></div>`).join('');
+    </div>
+    <div class="row" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--hair)">
+      <span class="muted" style="font-size:11px;letter-spacing:.1em;font-weight:700">РЕГУЛЯРНО</span>
+      ${DOW.map((d,di)=>`<button class="chip" aria-pressed="${(sc.days||[]).includes(di)}"
+        style="${(sc.days||[]).includes(di)?'background:var(--grad);color:#fff;border-color:transparent':''}"
+        onclick="toggleDay('${esc(s.series)}',${di},${idx})">${d}</button>`).join('')}
+      <input type="time" class="chip" style="cursor:text" id="sched-time-${idx}"
+        value="${esc(sc.time||'')}" onchange="setTime('${esc(s.series)}',this.value)">
+      ${schedLabel(sc)?`<button class="chip r" onclick="clearSched('${esc(s.series)}')">✕ убрать</button>`:''}
+    </div></div>`}).join('');
+  window._SCHED=SCHED;
 }
+async function saveSched(series,days,time){
+  const r=await fetch('/api/series-schedule',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({series,days,time})});
+  if(r.ok){toast('Расписание сохранено');loadSchedule()}else toast('Ошибка');
+}
+function toggleDay(series,di){
+  const sc=(window._SCHED||{})[series]||{days:[],time:''};
+  const days=sc.days.includes(di)?sc.days.filter(x=>x!==di):[...sc.days,di];
+  saveSched(series,days,sc.time||'');
+}
+function setTime(series,val){
+  const sc=(window._SCHED||{})[series]||{days:[],time:''};
+  saveSched(series,sc.days||[],val);
+}
+function clearSched(series){saveSched(series,[], '')}
 
 /* ═══ ПУЛЬС ═══ */
 let PULSE=null;
