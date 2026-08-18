@@ -48,8 +48,6 @@ app = Flask(__name__, template_folder="/app/templates")
 
 INPUT_DIR  = Path("/input")
 OUTPUT_DIR = Path("/output")
-OBSIDIAN_DIR = OUTPUT_DIR / "_obsidian"
-VAULT_DIR    = Path("/vault")                 # host Obsidian Vault (mounted)
 SETTINGS_FILE   = OUTPUT_DIR / "_settings.json"    # UI-editable runtime settings
 CATEGORIES_FILE = OUTPUT_DIR / "_categories.json"  # user-defined cat/subcat tree
 
@@ -85,7 +83,6 @@ _SETTINGS_KEYS = (
     "LLM_CUSTOM_API_KEY",     # only used when profile == "custom"
     "LLM_MODEL",              # legacy single-model setting (kept for compat)
     "SUMMARY_MODE",           # full | compact | minimal
-    "OBSIDIAN_SUBFOLDER",
     "IP_WHITELIST",           # список разрешённых внешних IP; пусто = фильтр выкл
     "SERIES_SCHEDULE",        # {категория: {"days": [0..6], "time": "10:00"}}
 )
@@ -245,26 +242,7 @@ def _effective_env() -> dict:
         env["LLM_MODEL"]    = resolved["model"]
     env["LLM_PROFILE"]  = profile_id
     env["SUMMARY_MODE"] = _active_summary_mode(settings)
-    sub = settings.get("OBSIDIAN_SUBFOLDER")
-    if sub:
-        env["OBSIDIAN_SUBFOLDER"] = sub
     return env
-
-
-def _vault_subfolder() -> str:
-    """Resolve subfolder name inside /vault — env or settings override."""
-    s = _load_settings().get("OBSIDIAN_SUBFOLDER")
-    if s:
-        return s
-    return (os.environ.get("OBSIDIAN_SUBFOLDER") or "Meetings").strip()
-
-
-def _vault_available() -> bool:
-    """Check if the Obsidian Vault is actually mounted and writable."""
-    try:
-        return VAULT_DIR.is_dir()
-    except Exception:
-        return False
 
 
 # ── Categories store (user-defined Category → Subcategory tree) ──────────────
@@ -314,64 +292,6 @@ def _valid_cat_name(name: str) -> bool:
         return False
     return _CAT_NAME_RE.search(name) is None
 
-
-_DASHBOARD_TEMPLATE = """\
----
-title: "Meetings Dashboard"
-tags: [meetings, dashboard]
----
-
-# 📊 Meetings Dashboard
-
-> Эта страница автоматически создана плагином Meeting Transcriber.
-> Используется плагином **Dataview** для агрегации заметок.
-
-## 🔥 Свежие планёрки
-
-```dataview
-TABLE WITHOUT ID
-  file.link AS "Планёрка",
-  date AS "Дата",
-  category AS "Категория",
-  length(attendees) AS "Участники"
-FROM "{folder}"
-WHERE type != "dashboard"
-SORT date DESC
-LIMIT 20
-```
-
-## ✅ Открытые задачи
-
-```dataview
-TASK FROM "{folder}"
-WHERE !completed
-SORT due ASC
-```
-
-## 🗂 По категориям
-
-```dataview
-TABLE length(rows) AS "Кол-во"
-FROM "{folder}"
-WHERE type != "dashboard"
-GROUP BY category
-SORT length(rows) DESC
-```
-"""
-
-
-def _ensure_dashboard(folder: Path, subfolder: str) -> None:
-    """Create Dashboard.md in the vault subfolder once (don't overwrite)."""
-    try:
-        folder.mkdir(parents=True, exist_ok=True)
-        dash = folder / "Dashboard.md"
-        if not dash.exists():
-            dash.write_text(
-                _DASHBOARD_TEMPLATE.format(folder=subfolder),
-                encoding="utf-8",
-            )
-    except Exception:
-        pass
 
 _SUPPORTED_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".mp4", ".mkv", ".flac", ".aac", ".webm"}
 
@@ -458,92 +378,6 @@ def _slugify_filename(name: str, max_len: int = 80) -> str:
     if len(s) > max_len:
         s = s[:max_len].rstrip()
     return s or "meeting"
-
-
-def _create_obsidian_note(out_dir: Path, stem: str,
-                          category: str, subcategory: str) -> Path | None:
-    """Create a nicely-named Obsidian-friendly copy of the summary.
-
-    Reads {stem}_summary.md (already includes YAML frontmatter) and
-    {stem}_meta.json (for title/date/attendees) and writes it under
-    OUTPUT_DIR/_obsidian/{Category}/{Subcategory}/{YYYY-MM-DD} — {Title}.md
-    plus a sibling copy of the (non-anonymized) speakers transcript.
-    Also mirrors both files into the mounted Obsidian Vault when available.
-    """
-    meta_path     = out_dir / f"{stem}_meta.json"
-    summary_path  = out_dir / f"{stem}_summary.md"
-    speakers_path = out_dir / f"{stem}_speakers.txt"
-    if not (meta_path.exists() and summary_path.exists()):
-        return None
-    try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-
-    title     = meta.get("title", "Совещание")
-    date      = meta.get("date", "")
-    attendees = [a for a in meta.get("attendees", []) if a and not a.startswith("SPEAKER_")]
-
-    content = summary_path.read_text(encoding="utf-8")
-
-    # Wrap attendee names in [[wiki-links]] inside the body
-    if attendees:
-        body_start = content.find("\n\n", content.find("---\n", 4) + 4) if content.startswith("---") else 0
-        head, body = content[:body_start], content[body_start:]
-        for name in sorted(attendees, key=len, reverse=True):
-            pattern = re.compile(rf"(?<!\[)\b{re.escape(name)}\b(?!\]\])")
-            body = pattern.sub(f"[[{name}]]", body)
-        content = head + body
-
-    cat_slug = _slugify_filename(category, 40) or "Общее"
-    sub_slug = _slugify_filename(subcategory, 40) or "Без подкатегории"
-
-    base_name = f"{date} — {_slugify_filename(title)}" if date else _slugify_filename(title)
-    summary_fname    = f"{base_name}.md"
-    transcript_fname = f"{base_name} — транскрипт.md"
-
-    transcript_md = None
-    if speakers_path.exists():
-        try:
-            raw = speakers_path.read_text(encoding="utf-8")
-            transcript_md = (
-                f"---\n"
-                f"type: meeting-transcript\n"
-                f"meeting: \"[[{base_name}]]\"\n"
-                f"date: {date}\n"
-                f"category: {category}\n"
-                f"subcategory: {subcategory}\n"
-                f"---\n\n"
-                f"# Транскрипт — {title}\n\n"
-                f"> Связанная заметка: [[{base_name}]]\n\n"
-                f"```\n{raw}\n```\n"
-            )
-        except Exception:
-            transcript_md = None
-
-    # ── Local mirror inside /output/_obsidian/ ───────────────────────────────
-    folder = OBSIDIAN_DIR / cat_slug / sub_slug
-    folder.mkdir(parents=True, exist_ok=True)
-    dest = folder / summary_fname
-    dest.write_text(content, encoding="utf-8")
-    if transcript_md:
-        (folder / transcript_fname).write_text(transcript_md, encoding="utf-8")
-
-    # ── Also write to mounted Obsidian Vault if available ────────────────────
-    if _vault_available():
-        try:
-            sub = _vault_subfolder()
-            vault_root = VAULT_DIR / sub
-            _ensure_dashboard(vault_root, sub)
-            cat_folder = vault_root / cat_slug / sub_slug
-            cat_folder.mkdir(parents=True, exist_ok=True)
-            (cat_folder / summary_fname).write_text(content, encoding="utf-8")
-            if transcript_md:
-                (cat_folder / transcript_fname).write_text(transcript_md, encoding="utf-8")
-        except Exception:
-            pass
-
-    return dest
 
 
 def _read_meta(meta_path: Path) -> dict | None:
@@ -762,14 +596,6 @@ def _pipeline(job_id: str, source_path: Path, source_kind: str, stem: str,
             "summary_md": summary_md,
             "category": category, "subcategory": subcategory,
         }
-        # ── Create Obsidian-friendly copy (if meta available) ────────────────
-        try:
-            obs = _create_obsidian_note(out_dir, stem, category, subcategory)
-            if obs:
-                _log(job, f"📒 Obsidian-заметка: {obs.relative_to(OUTPUT_DIR)}", "ok")
-        except Exception as e:
-            _log(job, f"Не удалось создать Obsidian-заметку: {e}", "warn")
-
         job["status"] = "done"
         _log(job, f"✅ Готово! Файлы сохранены в output/{out_subdir}/", "ok")
 
@@ -869,7 +695,7 @@ def settings_page():
 
 @app.route("/api/settings", methods=["GET", "POST"])
 def api_settings():
-    """Read/update UI-editable runtime settings (LLM profile/model, Obsidian subfolder)."""
+    """Read/update UI-editable runtime settings (LLM profile/model, summary mode)."""
     if request.method == "POST":
         data = request.get_json(silent=True) or {}
         _save_settings(data)
@@ -902,11 +728,8 @@ def api_settings():
             "LLM_BASE_URL":       resolved_per_profile[active]["base_url"],
             "LLM_MODEL":          resolved_per_profile[active]["model"],
             "SUMMARY_MODE":       _active_summary_mode(persisted),
-            "OBSIDIAN_SUBFOLDER": persisted.get("OBSIDIAN_SUBFOLDER") or os.environ.get("OBSIDIAN_SUBFOLDER", "Meetings"),
         },
         "llm_base_url":    resolved_per_profile[active]["base_url"],
-        "vault_mounted":   _vault_available(),
-        "vault_subfolder": _vault_subfolder(),
     })
 
 
@@ -960,55 +783,6 @@ def api_llm_models():
         return jsonify({"models": models})
     except Exception as exc:
         return jsonify({"models": [], "error": str(exc)}), 200
-
-
-@app.route("/api/vault-browse")
-def api_vault_browse():
-    """List directories inside the mounted /vault for the folder picker.
-
-    Query: ?path=relative/subdir   (relative to /vault, never escapes it)
-    """
-    if not _vault_available():
-        return jsonify({"mounted": False, "path": "", "dirs": []})
-
-    rel = (request.args.get("path") or "").strip().strip("/").replace("\\", "/")
-    try:
-        target = (VAULT_DIR / rel).resolve()
-        # Confine inside /vault
-        VAULT_DIR_RESOLVED = VAULT_DIR.resolve()
-        if target != VAULT_DIR_RESOLVED and VAULT_DIR_RESOLVED not in target.parents:
-            target = VAULT_DIR_RESOLVED
-            rel = ""
-        if not target.is_dir():
-            return jsonify({"mounted": True, "path": rel, "dirs": [], "error": "not a directory"})
-        dirs = sorted(
-            [p.name for p in target.iterdir() if p.is_dir() and not p.name.startswith(".")],
-            key=str.lower,
-        )
-        return jsonify({"mounted": True, "path": rel, "dirs": dirs})
-    except Exception as exc:
-        return jsonify({"mounted": True, "path": rel, "dirs": [], "error": str(exc)}), 200
-
-
-@app.route("/api/vault-mkdir", methods=["POST"])
-def api_vault_mkdir():
-    """Create a new subfolder inside /vault. Body: {path: 'rel/path', name: 'NewFolder'}"""
-    if not _vault_available():
-        return jsonify({"ok": False, "error": "vault not mounted"}), 400
-    data = request.get_json(silent=True) or {}
-    rel  = (data.get("path") or "").strip().strip("/").replace("\\", "/")
-    name = (data.get("name") or "").strip()
-    if not name or "/" in name or "\\" in name or name in (".", ".."):
-        return jsonify({"ok": False, "error": "invalid name"}), 400
-    try:
-        parent = (VAULT_DIR / rel).resolve()
-        VAULT_DIR_RESOLVED = VAULT_DIR.resolve()
-        if parent != VAULT_DIR_RESOLVED and VAULT_DIR_RESOLVED not in parent.parents:
-            return jsonify({"ok": False, "error": "outside vault"}), 400
-        (parent / name).mkdir(parents=True, exist_ok=True)
-        return jsonify({"ok": True})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 200
 
 
 @app.route("/api/categories", methods=["GET", "POST"])
@@ -1763,10 +1537,7 @@ def api_meeting_extras(meeting_id: int):
 
 @app.route("/api/meeting-summary/<int:meeting_id>", methods=["POST"])
 def api_edit_summary(meeting_id: int):
-    """Правка саммари человеком: тело меняется, frontmatter сохраняется.
-
-    Obsidian-копия пересобирается, чтобы не разъезжалась с правдой.
-    """
+    """Правка саммари человеком: тело меняется, frontmatter сохраняется."""
     m = _meeting_row(meeting_id)
     if not m:
         return jsonify({"error": "Встреча не найдена"}), 404
@@ -1783,12 +1554,6 @@ def api_edit_summary(meeting_id: int):
         if end != -1:
             fm = old[: end + 4] + "\n"
     sp.write_text(fm + body.rstrip() + "\n", encoding="utf-8")
-    try:
-        _create_obsidian_note(OUTPUT_DIR / m["dir"], m["stem"],
-                              m.get("category") or "Общее",
-                              m.get("subcategory") or "Без подкатегории")
-    except Exception as exc:
-        print(f"[SUMMARY] obsidian-копия: {exc}", flush=True)
     return jsonify({"ok": True})
 
 

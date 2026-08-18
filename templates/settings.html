@@ -279,32 +279,6 @@
     <div class="small" id="summary-mode-hint"></div>
   </div>
 
-  <!-- Obsidian Vault -->
-  <div class="card">
-    <h2>Obsidian Vault</h2>
-    <p class="hint">Путь к корню Vault задаётся в <code>.env</code> через <code>OBSIDIAN_VAULT_PATH</code> и монтируется в контейнер как <code>/vault</code>. Здесь выберите подпапку, куда складывать заметки.</p>
-
-    <div id="vault-status-pill" style="margin-bottom: 14px;">
-      <span class="pill"><span class="dot"></span><span id="vault-status-text">проверка…</span></span>
-    </div>
-
-    <label>Выбор подпапки</label>
-    <div class="breadcrumb" id="breadcrumb"></div>
-    <div class="tree" id="vault-tree">
-      <div class="tree-empty">Загрузка…</div>
-    </div>
-
-    <div class="row" style="margin-top: 10px;">
-      <input type="text" id="new-folder-name" placeholder="Имя новой подпапки">
-      <button id="create-folder" type="button">+ Создать</button>
-    </div>
-
-    <div id="selected-path-wrap" style="display:none;">
-      <label style="margin-top: 16px;">Выбранная подпапка</label>
-      <div class="selected-path" id="selected-path"></div>
-    </div>
-  </div>
-
   <div class="card">
     <h2>Доступ по IP</h2>
     <div class="small" style="margin-bottom:10px">
@@ -384,22 +358,10 @@ const profileEndpointHint = document.getElementById('profile-endpoint-hint');
 const summaryModeSelect = document.getElementById('summary-mode');
 const summaryModeHint   = document.getElementById('summary-mode-hint');
 
-const vaultStatusText  = document.getElementById('vault-status-text');
-const vaultStatusPill  = document.getElementById('vault-status-pill').querySelector('.pill');
-const breadcrumbEl     = document.getElementById('breadcrumb');
-const treeEl           = document.getElementById('vault-tree');
-const newFolderInput   = document.getElementById('new-folder-name');
-const createFolderBtn  = document.getElementById('create-folder');
-const selectedPathWrap = document.getElementById('selected-path-wrap');
-const selectedPathEl   = document.getElementById('selected-path');
-
 const saveBtn    = document.getElementById('save-btn');
 const saveStatus = document.getElementById('save-status');
 
 let state = {
-  vaultMounted: false,
-  currentPath: '',
-  selectedSubfolder: 'Meetings',
   llmModel: '',
   availableModels: [],
   activeProfile: 'openai',
@@ -423,8 +385,6 @@ async function init() {
   try {
     const r = await fetch('/api/settings');
     const d = await r.json();
-    state.vaultMounted      = !!d.vault_mounted;
-    state.selectedSubfolder = d.effective?.OBSIDIAN_SUBFOLDER || 'Meetings';
     state.llmModel          = d.effective?.LLM_MODEL || '';
     state.activeProfile     = d.active_profile || 'openai';
     state.profiles          = d.profiles || {};
@@ -439,11 +399,7 @@ async function init() {
     modelManual.value = state.profileModels[state.activeProfile] || state.llmModel;
     renderProfiles();
     renderKeyField();
-    renderVaultStatus();
-    updateSelectedPath();
     await loadModels();
-    if (state.vaultMounted) await loadDir('');
-    else renderTreeUnmounted();
   } catch (e) {
     saveStatus.textContent = 'Не удалось загрузить настройки';
     saveStatus.className = 'save-status err';
@@ -494,9 +450,9 @@ function renderKeyField() {
 
 function updateSummaryHint() {
   const hints = {
-    compact: 'TL;DR + взгляд коуча + ключевые решения + действия + вопросы + риски/блокеры.',
-    minimal: 'Только TL;DR, краткий взгляд коуча и действия с владельцем/сроком. Самый быстрый.',
-    full:    'Все разделы: контекст, карта обсуждения, статусы разделов, бизнес-контекст, наблюдения. Медленнее всего на локальной модели.',
+    compact: '«Коротко» + взгляд со стороны + решения + задачи + вопросы + риски/блокеры.',
+    minimal: 'Только «Коротко», краткий взгляд со стороны и задачи с владельцем/сроком. Самый быстрый.',
+    full:    'Все разделы: контекст, статусы разделов, бизнес-контекст, наблюдения. Медленнее всего на локальной модели.',
   };
   summaryModeHint.textContent = hints[state.summaryMode] || '';
 }
@@ -559,142 +515,9 @@ modelSelect.addEventListener('change', () => {
 
 refreshModelsBtn.addEventListener('click', loadModels);
 
-// ── Vault tree ───────────────────────────────────────────────────────────────
-function renderVaultStatus() {
-  if (state.vaultMounted) {
-    vaultStatusPill.className = 'pill ok';
-    vaultStatusText.textContent = 'Vault подключён (/vault)';
-  } else {
-    vaultStatusPill.className = 'pill warn';
-    vaultStatusText.textContent = 'Vault не подключён — задайте OBSIDIAN_VAULT_PATH в .env и перезапустите контейнер';
-  }
-}
-
-function renderTreeUnmounted() {
-  treeEl.innerHTML = '<div class="tree-empty">Vault не смонтирован.<br>Установите <code>OBSIDIAN_VAULT_PATH</code> в <code>.env</code> и выполните <code>docker compose up -d</code>.</div>';
-  breadcrumbEl.innerHTML = '';
-}
-
-async function loadDir(path) {
-  state.currentPath = path;
-  try {
-    const r = await fetch('/api/vault-browse?path=' + encodeURIComponent(path));
-    const d = await r.json();
-    if (!d.mounted) { renderTreeUnmounted(); return; }
-    renderBreadcrumb(d.path || '');
-    renderTree(d.dirs || []);
-  } catch (e) {
-    treeEl.innerHTML = '<div class="tree-empty">Ошибка чтения: ' + escapeHtml(String(e)) + '</div>';
-  }
-}
-
-function renderBreadcrumb(path) {
-  const parts = path ? path.split('/') : [];
-  const html = ['<a data-path="">/vault</a>'];
-  let acc = '';
-  parts.forEach((p, i) => {
-    acc = acc ? acc + '/' + p : p;
-    html.push('<span class="sep">/</span>');
-    if (i === parts.length - 1) html.push('<span>' + escapeHtml(p) + '</span>');
-    else html.push('<a data-path="' + escapeAttr(acc) + '">' + escapeHtml(p) + '</a>');
-  });
-  breadcrumbEl.innerHTML = html.join('');
-  breadcrumbEl.querySelectorAll('a').forEach(a => {
-    a.addEventListener('click', () => loadDir(a.dataset.path));
-  });
-}
-
-function renderTree(dirs) {
-  if (dirs.length === 0) {
-    treeEl.innerHTML = '<div class="tree-empty">Пусто. Создайте подпапку ниже или выберите эту папку как корень для заметок.</div>';
-    appendPickCurrent();
-    return;
-  }
-  const html = dirs.map(name => `
-    <div class="tree-item" data-name="${escapeAttr(name)}">
-      <span class="ico">📁</span>
-      <span class="name">${escapeHtml(name)}</span>
-      <button class="pick" data-name="${escapeAttr(name)}">Выбрать</button>
-    </div>
-  `).join('');
-  treeEl.innerHTML = html;
-  treeEl.querySelectorAll('.tree-item').forEach(el => {
-    const name = el.dataset.name;
-    el.addEventListener('click', (ev) => {
-      if (ev.target.classList.contains('pick')) {
-        ev.stopPropagation();
-        pickSubfolder(joinPath(state.currentPath, name));
-      } else {
-        loadDir(joinPath(state.currentPath, name));
-      }
-    });
-  });
-  appendPickCurrent();
-}
-
-function appendPickCurrent() {
-  if (!state.currentPath) return;
-  const div = document.createElement('div');
-  div.className = 'tree-item';
-  div.style.borderTop = '1px dashed var(--border)';
-  div.style.marginTop = '4px';
-  div.innerHTML = `
-    <span class="ico">✓</span>
-    <span class="name" style="font-style:italic; color:var(--muted);">выбрать текущую папку как корень для заметок</span>
-    <button class="pick" style="opacity:1;">Выбрать «${escapeHtml(state.currentPath)}»</button>
-  `;
-  div.querySelector('button').addEventListener('click', (ev) => {
-    ev.stopPropagation();
-    pickSubfolder(state.currentPath);
-  });
-  treeEl.appendChild(div);
-}
-
-function pickSubfolder(path) {
-  state.selectedSubfolder = path || 'Meetings';
-  updateSelectedPath();
-}
-
-function updateSelectedPath() {
-  if (!state.selectedSubfolder) {
-    selectedPathWrap.style.display = 'none';
-    return;
-  }
-  selectedPathWrap.style.display = 'block';
-  selectedPathEl.textContent = '/vault/' + state.selectedSubfolder + '/';
-}
-
-// ── Create folder ────────────────────────────────────────────────────────────
-createFolderBtn.addEventListener('click', async () => {
-  const name = (newFolderInput.value || '').trim();
-  if (!name) return;
-  if (!state.vaultMounted) {
-    flash('Vault не смонтирован', true);
-    return;
-  }
-  try {
-    const r = await fetch('/api/vault-mkdir', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: state.currentPath, name }),
-    });
-    const d = await r.json();
-    if (d.ok) {
-      newFolderInput.value = '';
-      await loadDir(state.currentPath);
-      flash('Папка создана');
-    } else {
-      flash(d.error || 'Не удалось создать', true);
-    }
-  } catch (e) {
-    flash('Ошибка создания: ' + e, true);
-  }
-});
-
 // ── Save ─────────────────────────────────────────────────────────────────────
 saveBtn.addEventListener('click', async () => {
   const model = (modelManual.value || modelSelect.value || '').trim();
-  const sub   = (state.selectedSubfolder || '').trim();
   if (model) state.profileModels[state.activeProfile] = model;
   if (apiKeyInput.value.trim()) state.profileKeys[state.activeProfile] = apiKeyInput.value.trim();
   saveBtn.disabled = true;
@@ -706,7 +529,6 @@ saveBtn.addEventListener('click', async () => {
       LLM_PROFILE_MODELS:  state.profileModels,
       LLM_MODEL:           model,
       SUMMARY_MODE:        state.summaryMode,
-      OBSIDIAN_SUBFOLDER:  sub,
     };
     // Per-profile API keys for online profiles (only typed ones get sent).
     const onlineKeys = {};
